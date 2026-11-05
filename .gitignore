@@ -1,0 +1,165 @@
+# =============================================================================
+# .gitignore for STM32CubeMX + VS Code + CMake Firmware Project
+# Project: Automatic Differential Pressure Damper Controller Firmware
+# Target MCU: STM32F030C8T6
+#
+# Policy:
+# - Commit source code, CubeMX .ioc, CMake files, linker scripts, docs, and rules.
+# - Ignore build outputs, generated caches, logs, temporary files, and local settings.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# 1. Build directories
+# -----------------------------------------------------------------------------
+/build/
+/build_*/
+/build-*/
+/cmake-build-*/
+/out/
+/Debug/
+/Release/
+
+
+# -----------------------------------------------------------------------------
+# 2. CMake generated files
+# -----------------------------------------------------------------------------
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+CTestTestfile.cmake
+DartConfiguration.tcl
+Testing/
+
+
+# -----------------------------------------------------------------------------
+# 3. Compiler / assembler / linker outputs
+# -----------------------------------------------------------------------------
+*.o
+*.obj
+*.d
+*.dep
+*.elf
+*.axf
+*.bin
+*.hex
+*.map
+*.lst
+*.srec
+*.sym
+*.su
+
+
+# -----------------------------------------------------------------------------
+# 4. Debugger / programmer logs
+# -----------------------------------------------------------------------------
+*.cfg.log
+openocd.log
+jlink.log
+JLinkLog.txt
+JLinkSettings.ini
+
+
+# -----------------------------------------------------------------------------
+# 5. VS Code local settings
+# -----------------------------------------------------------------------------
+# Ignore personal VS Code settings by default.
+/.vscode/*
+
+# Keep shared VS Code files only when they use relative paths.
+!/.vscode/extensions.json
+!/.vscode/tasks.json
+!/.vscode/launch.json
+
+# Do not commit these unless the whole team uses the same paths/toolchain.
+# !/.vscode/settings.json
+# !/.vscode/c_cpp_properties.json
+
+
+# -----------------------------------------------------------------------------
+# 6. STM32CubeIDE / STM32CubeMX temporary files
+# -----------------------------------------------------------------------------
+/.metadata/
+/.settings/
+/mx.scratch/
+.mxproject
+*.launch
+
+# If STM32CubeIDE is not the main IDE, keep its generated workspace folder ignored.
+/STM32CubeIDE/
+
+
+# -----------------------------------------------------------------------------
+# 7. Keil MDK files, if used temporarily
+# -----------------------------------------------------------------------------
+*.uvoptx
+*.uvguix*
+*.dbgconf
+*.scvd
+*.uvgui.*
+
+
+# -----------------------------------------------------------------------------
+# 8. Editor backup and temporary files
+# -----------------------------------------------------------------------------
+*~
+*.bak
+*.tmp
+*.temp
+*.swp
+*.swo
+*.orig
+*.rej
+
+
+# -----------------------------------------------------------------------------
+# 9. OS generated files
+# -----------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+desktop.ini
+Desktop.ini
+
+
+# -----------------------------------------------------------------------------
+# 10. Logs and local reports
+# -----------------------------------------------------------------------------
+*.log
+*.trace
+*.out
+*.err
+
+
+# -----------------------------------------------------------------------------
+# 11. Local environment and secret files
+# -----------------------------------------------------------------------------
+.env
+.env.*
+*.local
+secrets.*
+credentials.*
+
+
+# -----------------------------------------------------------------------------
+# 12. Files that should normally be committed
+# -----------------------------------------------------------------------------
+# Do not ignore:
+# - *.ioc
+# - CMakeLists.txt
+# - *.cmake
+# - *.ld
+# - Core/
+# - Drivers/
+# - app/
+# - control/
+# - module/
+# - device/
+# - board/
+# - config/
+# - docs/
+# - .clinerules/
+# - README.md
