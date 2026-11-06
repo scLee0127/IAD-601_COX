@@ -1,0 +1,117 @@
+#ifndef __MYGPIO_H__
+#define __MYGPIO_H__
+
+#include "main.h"
+
+// define
+// #ifndef BOARD_SELECT_OLD_VERSION
+#define MYGPIO_RS485_ENABLE_GPIO_PORT  		GPIOA
+#define MYGPIO_RS485_ENABLE_GPIO_NUM  		GPIO_PIN_8
+// LED indicator
+#define MYGPIO_LED_GPIO_PORT 				GPIOA
+#define MYGPIO_LED_POWER_GPIO_NUM 			GPIO_PIN_7
+#define MYGPIO_LED_GIDONG_GPIO_NUM   		GPIO_PIN_5
+
+#define MYGPIO_LED_M_GPIO_PORT 				GPIOB
+#define MYGPIO_LED_MANUAL_GPIO_NUM  		GPIO_PIN_10
+
+// 7Segment
+#define MYGPIO_7SEG_GPIO_PORT  				GPIOC
+#define MYGPIO_7SEG_DIGIT1_GPIO_NUM			GPIO_PIN_15
+#define MYGPIO_7SEG_DIGIT2_GPIO_NUM			GPIO_PIN_14
+#define MYGPIO_7SEG_DIGIT3_GPIO_NUM			GPIO_PIN_13
+
+#define MYGPIO_7SEG_DATA_GPIO_PORT  		GPIOB
+#define MYGPIO_7SEG_A_GPIO_NUM				GPIO_PIN_0
+#define MYGPIO_7SEG_B_GPIO_NUM				GPIO_PIN_1
+#define MYGPIO_7SEG_C_GPIO_NUM				GPIO_PIN_2
+#define MYGPIO_7SEG_D_GPIO_NUM				GPIO_PIN_3
+#define MYGPIO_7SEG_E_GPIO_NUM				GPIO_PIN_4
+#define MYGPIO_7SEG_F_GPIO_NUM				GPIO_PIN_5
+#define MYGPIO_7SEG_G_GPIO_NUM				GPIO_PIN_6
+#define MYGPIO_7SEG_DP_GPIO_NUM				GPIO_PIN_7
+
+// Sensor I2C
+#define MYGPIO_DP_SENSOR_GPIO_PORT  		GPIOB
+#define MYGPIO_DP_SENSOR_SCL_GPIO_NUM  		GPIO_PIN_8
+#define MYGPIO_DP_SENSOR_SDA_GPIO_NUM  		GPIO_PIN_9
+
+// Button
+#define MYGPIO_BTN_GPIO_PORT  		 		GPIOA
+#define MYGPIO_BTN_UP_GPIO_NUM  			GPIO_PIN_4
+#define MYGPIO_BTN_DOWN_GPIO_NUM  			GPIO_PIN_0
+#define MYGPIO_BTN_SEL_GPIO_NUM  			GPIO_PIN_15
+
+// Input
+// external fire run signal
+#define MYGPIO_IN_GPIO_PORT  				GPIOA
+#define MYGPIO_IN_GIDING_GPIO_NUM  			GPIO_PIN_1
+
+// menual switch
+#define MYGPIO_IN_M_GPIO_PORT  				GPIOB
+#define MYGPIO_IN_MANUAL_GPIO_NUM  			GPIO_PIN_11
+
+// Output
+#define MYGPIO_OUT_RELAY_GPIO_PORT  		GPIOA
+#define MYGPIO_OUT_RELAY_EXT_CHECK_GPIO_NUM GPIO_PIN_12
+#define MYGPIO_OUT_RELAY_EXT_FAULT_GPIO_NUM GPIO_PIN_11
+
+// motor
+#define MYGPIO_MOTOR_GPIO_PORT  			GPIOF
+#define MYGPIO_MOTOR_LIMIT_SW0_GPIO_NUM  	GPIO_PIN_6
+#define MYGPIO_MOTOR_LIMIT_SW1_GPIO_NUM  	GPIO_PIN_7
+
+// Relay
+#define MYGPIO_OUT_RELAY_GIDONG_GPIO_NUM  	GPIO_PIN_12
+#define MYGPIO_OUT_RELAY_MANUAL_GPIO_NUM  	GPIO_PIN_11
+
+// #else
+// // RS485 Enable / Disable
+// #define MYGPIO_RS485_ENABLE_GPIO_PORT  		GPIOA
+// #define MYGPIO_RS485_ENABLE_GPIO_NUM  		GPIO_PIN_11
+// // RS485 LED
+// #define MYGPIO_RS485_RX_LED_GPIO_PORT 		GPIOA
+// #define MYGPIO_RS485_RX_LED_GPIO_NUM 		GPIO_PIN_12
+// #define MYGPIO_RS485_TX_LED_GPIO_PORT   	GPIOA
+// #define MYGPIO_RS485_TX_LED_GPIO_NUM  		GPIO_PIN_8
+// // 7Segment
+// #define MYGPIO_7SEG_GPIO_PORT  				GPIOB
+// #define MYGPIO_7SEG_DIGIT1_GPIO_NUM			GPIO_PIN_5  	
+// #define MYGPIO_7SEG_DIGIT2_GPIO_NUM			GPIO_PIN_6
+// #define MYGPIO_7SEG_DIGIT3_GPIO_NUM			GPIO_PIN_7
+// #define MYGPIO_7SEG_A_GPIO_NUM				GPIO_PIN_8
+// #define MYGPIO_7SEG_B_GPIO_NUM				GPIO_PIN_9
+// #define MYGPIO_7SEG_C_GPIO_NUM				GPIO_PIN_10
+// #define MYGPIO_7SEG_D_GPIO_NUM				GPIO_PIN_11
+// #define MYGPIO_7SEG_E_GPIO_NUM				GPIO_PIN_12
+// #define MYGPIO_7SEG_F_GPIO_NUM				GPIO_PIN_13
+// #define MYGPIO_7SEG_G_GPIO_NUM				GPIO_PIN_14
+// #define MYGPIO_7SEG_DP_GPIO_NUM				GPIO_PIN_15
+// // Sensor I2C
+// #define MYGPIO_DP_SENSOR_GPIO_PORT  		GPIOF
+// #define MYGPIO_DP_SENSOR_SCL_GPIO_NUM  		GPIO_PIN_6
+// #define MYGPIO_DP_SENSOR_SDA_GPIO_NUM  		GPIO_PIN_7
+// // Button
+// #define MYGPIO_BTN_GPIO_PORT  		 		GPIOC
+// #define MYGPIO_BTN_UP_GPIO_NUM  			GPIO_PIN_14
+// #define MYGPIO_BTN_SEL_GPIO_NUM  			GPIO_PIN_15
+// #endif
+
+#define MYGPIO_RS485_DISABLE  		0
+#define MYGPIO_RS485_ENABLE  		1
+
+
+
+// function
+void MYGPIO_Init( void );
+void MYGPIO_Proc( void );
+void MYGPIO_Rs485_Eanble( uint8_t _cnEn );
+void MYGPIO_Led_Control( uint8_t _cnLed, uint8_t _cnCtrl );
+void MYGPIO_Run_Buzzer( uint8_t _cnBuzzerType );
+void MYGPIO_Stop_Buzzer( void );
+void MYGPIO_Relay_Control( uint8_t _cnRelay, uint8_t _cnCtrl );
+uint8_t MYGPIO_Get_Gidong_State( void );
+uint8_t MYGPIO_Get_Manual_State( void );
+void MYGPIO_Motor_Control( uint8_t _cnDirection, uint8_t _cnSpeed );
+uint8_t MYGPIO_Get_LimitSwitch_State( uint8_t _cnIdx );
+#endif // __MYGPIO_H__

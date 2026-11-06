@@ -6,7 +6,7 @@
   ******************************************************************************
   * @attention
   *
-  * Copyright (c) 2026 STMicroelectronics.
+  * Copyright (c) 2025 STMicroelectronics.
   * All rights reserved.
   *
   * This software is licensed under terms that can be found in the LICENSE file
@@ -21,7 +21,20 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include "global.h"
+#include "myuart.h"
+#include "mygpio.h"
+#include "mytimer.h"
+#include "build_info.h"
+#include "my7segment.h"
+#include "mygui.h"
+#include "mydpsensor.h"
+#include "myevent.h"
+#include "mymodbus.h"
+#include "mymotor.h"
+#include "myadc.h"
+#include "enviroment.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -36,36 +49,53 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+IWDG_HandleTypeDef hiwdg;
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-ADC_HandleTypeDef hadc;
-
-I2C_HandleTypeDef hi2c1;
-
-IWDG_HandleTypeDef hiwdg;
-
-TIM_HandleTypeDef htim1;
-
-UART_HandleTypeDef huart1;
-UART_HandleTypeDef huart2;
+// UART_HandleTypeDef huart1;
 
 /* USER CODE BEGIN PV */
+ADC_HandleTypeDef hadc;
 
+#ifdef __GNUC__
+    #define PUTCHAR_PROTOTYPE int __io_putchar(int ch)
+#else
+    #define PUTCHAR_PROTOTYPE int fputc(int ch, FILE *f)
+#endif /* __GNUC__ */
+
+PUTCHAR_PROTOTYPE
+{
+    // #ifdef BOARD_DEBUG_MSG_ENABLE
+    // MYGPIO_Rs485_Eanble( MYGPIO_RS485_ENABLE );
+    HAL_UART_Transmit(&UartHandler_Debug, (uint8_t *)&ch, 1, 1000);
+    // MYGPIO_Rs485_Eanble( MYGPIO_RS485_DISABLE );
+    // #endif
+    return ch;
+}
+// int _write( int file, char *p, int len )
+// {
+//     MYGPIO_Rs485_Eanble( MYGPIO_RS485_ENABLE );
+//     HAL_UART_Transmit(&UartHandler_Debug, (uint8_t*)p, len, 1000);
+//     MYGPIO_Rs485_Eanble( MYGPIO_RS485_DISABLE );
+//     return len;
+// }
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
-static void MX_GPIO_Init(void);
-static void MX_ADC_Init(void);
-static void MX_I2C1_Init(void);
 static void MX_IWDG_Init(void);
-static void MX_TIM1_Init(void);
-static void MX_USART1_UART_Init(void);
-static void MX_USART2_UART_Init(void);
-/* USER CODE BEGIN PFP */
+static void IWDG_Redfresh( void );
 
+/* USER CODE BEGIN PFP */
+void Print_Banner( void )
+{
+    MYUTIL_Printf("====================================================\r\n");
+    MYUTIL_Printf("= GENP IAD200 by Simba\r\n");
+    MYUTIL_Printf("= Version : %01d.%02d(%s)\r\n", FIRMWARE_MAJOR_NUM, FIRMWARE_MINOR_NUM, BUILD_DATETIME );
+    MYUTIL_Printf("= FW Date : %s %s\r\n", __DATE__, __TIME__ );
+    MYUTIL_Printf("====================================================\r\n");
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -77,11 +107,59 @@ static void MX_USART2_UART_Init(void);
   * @brief  The application entry point.
   * @retval int
   */
+
+// static void uart_sanity_check(UART_HandleTypeDef *huart)
+// {
+//     uint32_t f_usart = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_USART1); // HAL이 인식한 USART1 클럭
+//     uint32_t baud    = huart->Init.BaudRate;
+//     uint32_t over8   = (huart->Init.OverSampling == UART_OVERSAMPLING_8) ? 1U : 0U;
+
+//     // 기대 BRR 계산(F0 규칙): OVER8=0(16x) → round(f/baud), OVER8=1(8x) → round(2*f/baud)
+//     uint32_t expect_brr = over8 ? ((2U*f_usart + baud/2U) / baud)
+//                                 : ((    f_usart + baud/2U) / baud);
+
+//     uint32_t actual_brr = huart->Instance->BRR;
+
+//     // 상대 오차(‰) 계산
+//     int32_t err_ppm = 0;
+//     if (actual_brr != 0) {
+//         int32_t diff = (int32_t)actual_brr - (int32_t)expect_brr;
+//         err_ppm = (int32_t)((1000000LL * diff) / (int32_t)expect_brr); // ppm 단위
+//     }
+
+//     printf("[USART1] Fclk=%lu Hz, Baud=%lu, OVER8=%lu\r\n", (unsigned long)f_usart, (unsigned long)baud, (unsigned long)over8);
+//     printf("  expect BRR=0x%lX (%lu), actual BRR=0x%lX (%lu), err=%ld ppm\r\n",
+//            (unsigned long)expect_brr, (unsigned long)expect_brr,
+//            (unsigned long)actual_brr, (unsigned long)actual_brr,
+//            (long)err_ppm);
+// }
+
+// static void uart_dump_regs(USART_TypeDef *U)
+// {
+//     uint32_t cr1 = U->CR1, cr2 = U->CR2, cr3 = U->CR3, brr = U->BRR;
+
+//     printf("CR1=0x%08lX  CR2=0x%08lX  CR3=0x%08lX  BRR=0x%08lX\r\n",
+//            (unsigned long)cr1, (unsigned long)cr2, (unsigned long)cr3, (unsigned long)brr);
+
+//     // 관심 비트 해석
+//     printf("  OVER8=%lu M[12|M0]=%lu%lu PCE=%lu PS=%lu TE=%lu RE=%lu UE=%lu\r\n",
+//            (unsigned long)((cr1>>15)&1),                     // OVER8
+//            (unsigned long)((cr1>>12)&1), (unsigned long)((cr1>>28)&1), // M, M0 (시리즈별)
+//            (unsigned long)((cr1>>10)&1), (unsigned long)((cr1>>9)&1),  // Parity
+//            (unsigned long)((cr1>>3)&1),  (unsigned long)((cr1>>2)&1),  // TE/RE
+//            (unsigned long)(cr1 & 1));                                   // UE
+//     printf("  STOP=%lu  SWAP=%lu  TXINV=%lu RXINV=%lu  DATAINV=%lu MSBFIRST=%lu\r\n",
+//            (unsigned long)((cr2>>12)&3),                     // STOP
+//            (unsigned long)((cr2>>15)&1),                     // SWAP
+//            (unsigned long)((cr2>>22)&1), (unsigned long)((cr2>>16)&1), // TXINV/RXINV
+//            (unsigned long)((cr2>>27)&1), (unsigned long)((cr2>>19)&1));// DATAINV/MSB
+// }
+
 int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  uint8_t cnLedToggle_f = 0;
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -97,17 +175,23 @@ int main(void)
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
+  // MX_GPIO_Init();
+  MX_IWDG_Init();     // watch dog
+  MYGPIO_Init();
+  MYUART_Debug_Init();  // Environment loading already prints debug messages.
+  ENV_Load_Enviroment_Info();
+  MYUART_Init();
 
+  ENV_Print_Load_Data();
+  MYTIMER_Init();
+  MYADC_Init();
+  Print_Banner();
+  MYMOTOR_Init();
+  // uart_sanity_check( &UartHandler_Debug );
+  // uart_dump_regs( UartHandler_Debug.Instance );
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  MX_ADC_Init();
-  MX_I2C1_Init();
-  MX_IWDG_Init();
-  MX_TIM1_Init();
-  MX_USART1_UART_Init();
-  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
 
   /* USER CODE END 2 */
@@ -116,6 +200,54 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+    IWDG_Redfresh();
+    if( 0 != gnBootTimer ) {
+      MY7SEGMENT_Set_Value( FND_E, FND_n, FND_P_DOT, SEVEN_SEG_BLINK_OFF );
+      // MYGPIO_Buzzer_Control( CONTROL_STATE_ON );
+    }
+    else{
+      
+    
+      MYGUI_Proc();
+      MYGPIO_Proc();
+      MYEVENT_Proc();
+      MYMOTOR_Proc();
+//      MYMODBUS_Proc();
+      MYADC_Proc();
+      MYUART_Check_Tx_Timeout();
+      if( 0 == gnUartCheckTimer ){
+        gnUartCheckTimer = 1000;
+        MYUART_Check_Uart_Status( &UartHandler_Rs486 );
+      }
+
+      if( ( 1 == gcnSaveEnv_f ) && ( 0 == gnSaveEnvDelayTimer ) ){
+          gcnSaveEnv_f = 0;
+          ENV_Save_Enviro
+          ment_Info();
+      }
+    }
+    
+    
+    if( 0 == gnTestTimer  ){
+
+      // MYUTIL_Printf("................ event %d / %ldPA %fA\r\n", gcnFireEvent_f, gnCorrectValue, ADC0_Get_Current());
+      
+      gnTestTimer = 1000;
+      if( 0 == cnLedToggle_f ){
+        cnLedToggle_f = 1;
+        // HAL_GPIO_WritePin( MYGPIO_RS485_RX_LED_GPIO_PORT, MYGPIO_RS485_RX_LED_GPIO_NUM, GPIO_PIN_RESET );
+        // HAL_GPIO_WritePin( MYGPIO_RS485_RX_LED_GPIO_PORT, MYGPIO_RS485_TX_LED_GPIO_NUM, GPIO_PIN_SET );
+      }
+      else{
+        cnLedToggle_f = 0;
+        // HAL_GPIO_WritePin( MYGPIO_RS485_RX_LED_GPIO_PORT, MYGPIO_RS485_RX_LED_GPIO_NUM, GPIO_PIN_SET );
+        // HAL_GPIO_WritePin( MYGPIO_RS485_RX_LED_GPIO_PORT, MYGPIO_RS485_TX_LED_GPIO_NUM, GPIO_PIN_RESET );
+      }
+      
+    }
+    SM7291_Sensor_Proc();
+    // MYBTN_Proc();
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -136,13 +268,9 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_HSI14
-                              |RCC_OSCILLATORTYPE_LSI;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSI14State = RCC_HSI14_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.HSI14CalibrationValue = 16;
-  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL12;
@@ -164,117 +292,15 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART1|RCC_PERIPHCLK_I2C1;
-  PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK1;
-  PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USART1;
+  PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_SYSCLK;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
   {
     Error_Handler();
   }
 }
 
-/**
-  * @brief ADC Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_ADC_Init(void)
-{
-
-  /* USER CODE BEGIN ADC_Init 0 */
-
-  /* USER CODE END ADC_Init 0 */
-
-  ADC_ChannelConfTypeDef sConfig = {0};
-
-  /* USER CODE BEGIN ADC_Init 1 */
-
-  /* USER CODE END ADC_Init 1 */
-
-  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
-  */
-  hadc.Instance = ADC1;
-  hadc.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV1;
-  hadc.Init.Resolution = ADC_RESOLUTION_12B;
-  hadc.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc.Init.ScanConvMode = ADC_SCAN_DIRECTION_FORWARD;
-  hadc.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
-  hadc.Init.LowPowerAutoWait = DISABLE;
-  hadc.Init.LowPowerAutoPowerOff = DISABLE;
-  hadc.Init.ContinuousConvMode = DISABLE;
-  hadc.Init.DiscontinuousConvMode = DISABLE;
-  hadc.Init.ExternalTrigConv = ADC_SOFTWARE_START;
-  hadc.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
-  hadc.Init.DMAContinuousRequests = DISABLE;
-  hadc.Init.Overrun = ADC_OVR_DATA_PRESERVED;
-  if (HAL_ADC_Init(&hadc) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure for the selected ADC regular channel to be converted.
-  */
-  sConfig.Channel = ADC_CHANNEL_6;
-  sConfig.Rank = ADC_RANK_CHANNEL_NUMBER;
-  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
-  if (HAL_ADC_ConfigChannel(&hadc, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN ADC_Init 2 */
-
-  /* USER CODE END ADC_Init 2 */
-
-}
-
-/**
-  * @brief I2C1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_I2C1_Init(void)
-{
-
-  /* USER CODE BEGIN I2C1_Init 0 */
-
-  /* USER CODE END I2C1_Init 0 */
-
-  /* USER CODE BEGIN I2C1_Init 1 */
-
-  /* USER CODE END I2C1_Init 1 */
-  hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0x2000090E;
-  hi2c1.Init.OwnAddress1 = 0;
-  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
-  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
-  hi2c1.Init.OwnAddress2 = 0;
-  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
-  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Analogue filter
-  */
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  /** Configure Digital filter
-  */
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN I2C1_Init 2 */
-
-  /* USER CODE END I2C1_Init 2 */
-
-}
-
+/* USER CODE BEGIN 4 */
 /**
   * @brief IWDG Initialization Function
   * @param None
@@ -288,12 +314,12 @@ static void MX_IWDG_Init(void)
   /* USER CODE END IWDG_Init 0 */
 
   /* USER CODE BEGIN IWDG_Init 1 */
-
+  // 32x1,250/40,000 ~= 1sec
   /* USER CODE END IWDG_Init 1 */
   hiwdg.Instance = IWDG;
-  hiwdg.Init.Prescaler = IWDG_PRESCALER_4;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_32;
   hiwdg.Init.Window = 4095;
-  hiwdg.Init.Reload = 4095;
+  hiwdg.Init.Reload = 2500;             // watch dog 2seconds
   if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
   {
     Error_Handler();
@@ -304,232 +330,12 @@ static void MX_IWDG_Init(void)
 
 }
 
-/**
-  * @brief TIM1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM1_Init(void)
+static void IWDG_Redfresh( void )
 {
-
-  /* USER CODE BEGIN TIM1_Init 0 */
-
-  /* USER CODE END TIM1_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-  TIM_OC_InitTypeDef sConfigOC = {0};
-  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
-
-  /* USER CODE BEGIN TIM1_Init 1 */
-
-  /* USER CODE END TIM1_Init 1 */
-  htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 0;
-  htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 2399;
-  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim1.Init.RepetitionCounter = 0;
-  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
-  {
+  if( HAL_OK != HAL_IWDG_Refresh(&hiwdg) ){
     Error_Handler();
   }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sConfigOC.OCMode = TIM_OCMODE_PWM1;
-  sConfigOC.Pulse = 0;
-  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
-  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
-  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
-  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
-  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
-  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
-  sBreakDeadTimeConfig.DeadTime = 0;
-  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
-  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
-  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
-  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM1_Init 2 */
-
-  /* USER CODE END TIM1_Init 2 */
-  HAL_TIM_MspPostInit(&htim1);
-
 }
-
-/**
-  * @brief USART1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART1_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART1_Init 0 */
-
-  /* USER CODE END USART1_Init 0 */
-
-  /* USER CODE BEGIN USART1_Init 1 */
-
-  /* USER CODE END USART1_Init 1 */
-  huart1.Instance = USART1;
-  huart1.Init.BaudRate = 38400;
-  huart1.Init.WordLength = UART_WORDLENGTH_8B;
-  huart1.Init.StopBits = UART_STOPBITS_1;
-  huart1.Init.Parity = UART_PARITY_NONE;
-  huart1.Init.Mode = UART_MODE_TX_RX;
-  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART1_Init 2 */
-
-  /* USER CODE END USART1_Init 2 */
-
-}
-
-/**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART2_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART2_Init 0 */
-
-  /* USER CODE END USART2_Init 0 */
-
-  /* USER CODE BEGIN USART2_Init 1 */
-
-  /* USER CODE END USART2_Init 1 */
-  huart2.Instance = USART2;
-  huart2.Init.BaudRate = 38400;
-  huart2.Init.WordLength = UART_WORDLENGTH_8B;
-  huart2.Init.StopBits = UART_STOPBITS_1;
-  huart2.Init.Parity = UART_PARITY_NONE;
-  huart2.Init.Mode = UART_MODE_TX_RX;
-  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART2_Init 2 */
-
-  /* USER CODE END USART2_Init 2 */
-
-}
-
-/**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
-
-  /* USER CODE END MX_GPIO_Init_1 */
-
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOF_CLK_ENABLE();
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, FND_DIGIT_3_Pin|FND_DIGIT_2_Pin|FND_DIGIT_1_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOA, LED_GIDONG_Pin|LED_POWER_Pin|RS485_EN_Pin|EXT_ON_CHECK_RELAY_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, FND_A_Pin|FND_B_Pin|FND_C_Pin|LED_MANUAL_Pin
-                          |INB_Pin|INA_Pin|SEL0_Pin|FND_D_Pin
-                          |FND_E_Pin|FND_F_Pin|FND_G_Pin|GND_DP_Pin, GPIO_PIN_RESET);
-
-  /*Configure GPIO pins : FND_DIGIT_3_Pin FND_DIGIT_2_Pin FND_DIGIT_1_Pin */
-  GPIO_InitStruct.Pin = FND_DIGIT_3_Pin|FND_DIGIT_2_Pin|FND_DIGIT_1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : DOWN_KEY_Pin GIDONG_IN_Pin UP_KEY_Pin EXT_FAULT_ON_RELAY_Pin
-                           MODE_KEY_Pin */
-  GPIO_InitStruct.Pin = DOWN_KEY_Pin|GIDONG_IN_Pin|UP_KEY_Pin|EXT_FAULT_ON_RELAY_Pin
-                          |MODE_KEY_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : LED_GIDONG_Pin LED_POWER_Pin RS485_EN_Pin EXT_ON_CHECK_RELAY_Pin */
-  GPIO_InitStruct.Pin = LED_GIDONG_Pin|LED_POWER_Pin|RS485_EN_Pin|EXT_ON_CHECK_RELAY_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : FND_A_Pin FND_B_Pin FND_C_Pin LED_MANUAL_Pin
-                           INB_Pin INA_Pin SEL0_Pin FND_D_Pin
-                           FND_E_Pin FND_F_Pin FND_G_Pin GND_DP_Pin */
-  GPIO_InitStruct.Pin = FND_A_Pin|FND_B_Pin|FND_C_Pin|LED_MANUAL_Pin
-                          |INB_Pin|INA_Pin|SEL0_Pin|FND_D_Pin
-                          |FND_E_Pin|FND_F_Pin|FND_G_Pin|GND_DP_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : MANUAL_IN_Pin */
-  GPIO_InitStruct.Pin = MANUAL_IN_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(MANUAL_IN_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : M_SW2_Pin M_SW1_Pin */
-  GPIO_InitStruct.Pin = M_SW2_Pin|M_SW1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
-
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-
-  /* USER CODE END MX_GPIO_Init_2 */
-}
-
-/* USER CODE BEGIN 4 */
-
 /* USER CODE END 4 */
 
 /**
@@ -543,10 +349,12 @@ void Error_Handler(void)
   __disable_irq();
   while (1)
   {
+    MYUTIL_Printf("E");
   }
   /* USER CODE END Error_Handler_Debug */
 }
-#ifdef USE_FULL_ASSERT
+
+#ifdef  USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.

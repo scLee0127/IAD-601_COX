@@ -1,0 +1,806 @@
+#include "global.h"
+#include "mymotor.h"
+#include "mygpio.h"
+#include "mytimer.h"
+#include "myadc.h"
+/////////////////////////////////////////////////////////////////////////////////////////////
+// import function prototype
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// global variable
+// MOTOR
+#define SWITCH_DELAY_MS     100
+#define RAMP_UP_PER_STEP    0.01f
+#define RAMP_DOWN_PER_STEP  0.02f  		// 감속은 빠르게
+#define MIN_DUTY            0.05f  		// 1% (정지마찰만 겨우 이기는 수준)
+#define MAX_DUTY            0.25f
+
+typedef enum { 
+	SD_IDLE = 0, 
+	SD_RUN, 
+	SD_SWITCH_PAUSE 
+}eSD_STATE_T;
+
+eSD_STATE_T geState = SD_IDLE;
+
+static int gnCmd_Dir = 0;
+static float gnfCmd_Speed = 0.0f;
+static int gnCur_Dir   = 0;
+static float gnfCur_Pwm   = 0.0f;
+static uint32_t gnT_Switch  = 0;
+
+static volatile float g_min_speed = 0.01f;     // 최소 PWM (모터 정지마찰 극복)
+static volatile float g_deadband  = 3.0f;      // ±2Pa 내면 정지
+
+
+// PID
+typedef struct {
+    float kp, ki, kd;
+    float dt;                 // [s], 예: 0.01f (10ms)
+    float out_min, out_max;   // 출력 한계 [-1..+1]
+    float i_min, i_max;       // 적분 한계
+    float d_hz;               // D 저역통과 컷오프(Hz), 0이면 비활성
+
+    // 내부 상태
+    float integrator;
+    float prev_err;
+    float d_state;
+    uint8_t first_run;
+
+    // 안정화 구간
+    float settle_band;
+    float settle_scale;
+    float u_slew;
+    float prev_u;
+} MYPID_t;
+static MYPID_t gstPid;
+static volatile float g_target_pa = 50.0f;     // 목표 차압
+
+uint32_t gnMotorTick_prev = 0;
+uint32_t gnAcc2ms = 0;
+uint32_t gnAcc10ms = 0;
+
+// Block hunting
+#define BLANK_AFTER_LIMIT_MS 		500  		// 리미트 직후 블록킹
+#define DB_IN_PA 					4.0f  		// 데드밴드 진입(정지)
+#define DB_OUT_PA  					12.0f  		// 데드밴드 탈출 마진(슈미트)
+#define DB_HOLD_MS  				1000 			// 제기동 최소 유지
+#define Y_SLEW_PA_PER_20MS  		8.0f  		// 20ms당 측정값 최대 변화량 제한
+#define DIR_THR 					0.08f  		// 아주 작은 출력 무시
+#define DIR_HOLD_MS  				40  		// 방향 전환 전에 같은 부호 유지해야
+static uint8_t gcnBlank_Active = 0;
+static uint32_t gnBlank_t0_ms = 0;
+static uint8_t gcnDB_Hold = 0;
+static uint32_t gnDB_Out_ms = 0;
+static float gnfY_Filt = 0.0f;  				// LPF+슬루 적용 측정값
+static float gnfY_Prev = 0.0f;
+static int gnLast_Dir = 0;
+static uint32_t gnDir_Hold_ms = 0;
+static uint8_t gcnPrevClose = 0;  				// 리미트 에지 검출
+static uint8_t gcnPrevOpen = 0;  				// 리미트 에지 검출
+
+// gcnFireEvent_f 엣지 감지 (PID 상태 리셋 & 1→0 즉시 정지 조건 처리)
+static uint8_t prevFire = 0xFF;
+static uint8_t s_close_hold = 0;
+static uint8_t gcnOverCurrent_Err = 0;
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// local function prototype
+// MOTOR
+void _mymotor_set_open_pwm( const float _nfduty );
+void _mymotor_set_close_pwm( const float _nfduty );
+void _mymotor_gnd_open_control( uint8_t _cnCtrl );
+void _mymotor_gnd_close_control( uint8_t _cnCtrl );
+void _mymotor_shtter_state_update( float _nfCor );
+void _mymotor_coast_off( void );
+void _mymotor_break_stop( void );
+void _mymotor_shttuer_cmd( int _nDir, float _nfSpeed );
+uint8_t _mymotor_get_open_gnd_state( void );
+uint8_t _mymotor_get_close_gnd_state( void );
+// PID
+void _mypid_init( MYPID_t *p, float kp, float ki, float kd, float dt );
+void _mypid_set_limits( MYPID_t *p, float out_min, float out_max, float i_min, float i_max );
+void _mypid_set_d_lpf(MYPID_t *p, float d_hz);
+void _mypid_reset(MYPID_t *p);
+float _mypid_update(MYPID_t *p, float sp, float y);
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// public and export function implement
+
+void MYMOTOR_Init( void )
+{
+	// _mypid_init( &gstPid, 0.15f, 0.05f, 0.02f, 0.01f );   // 10ms
+	_mypid_init( &gstPid, 0.15f, 0.05f, 0.02f, 0.02f );   // 10ms kd -->> 
+    _mypid_set_limits( &gstPid, -1.0f, +1.0f, -0.5f, +0.5f );
+    _mypid_set_d_lpf( &gstPid, 5.0f );                    // D LPF 5Hz
+    _mypid_reset( &gstPid );
+
+    g_target_pa = gnfTargetDpValue;
+}
+
+void MYMOTOR_Proc( void )
+{
+	uint8_t cnraw_close_sw = 0;
+	uint8_t cnraw_open_sw = 0;
+	uint8_t cnedge_close_rise = 0;
+	uint8_t cnedge_open_rise = 0;
+	uint8_t gcnMotorFixedSpeed_f = 0;
+	float nfCor = 0.0f;
+	float nfcurrent_value = 0.0f;
+	if( 0 == gnMotorTick_prev ){
+		gnMotorTick_prev = HAL_GetTick();
+	}
+	uint32_t nmotortick_curr = HAL_GetTick();
+	uint32_t ndt = nmotortick_curr - gnMotorTick_prev;
+	gnMotorTick_prev = nmotortick_curr;
+
+	gnAcc2ms += ndt;
+	gnAcc10ms += ndt;
+
+	
+	nfcurrent_value = ADC0_Get_Current();
+	cnraw_open_sw = MYGPIO_Get_LimitSwitch_State( LIMIT_SWITCH_SEL_1 );
+	cnraw_close_sw = MYGPIO_Get_LimitSwitch_State( LIMIT_SWITCH_SEL_0 );
+
+	printf("0->open %d close %d dir %d current %f \r\n", cnraw_open_sw, cnraw_close_sw, gnCmd_Dir, nfcurrent_value );
+	if( gnfMotorCurretValue < nfcurrent_value ){
+		printf("Motor Over current\r\n");
+		_mymotor_shttuer_cmd( 0, 0.0f );
+		_mymotor_break_stop();
+		geState = SD_IDLE;
+		gcnOverCurrent_Err = 1;
+		return;
+	}
+
+	if( 1 == gcnOverCurrent_Err ){
+		return;
+	}
+
+	if ((cnraw_close_sw == 1) && ( 0 > gnCmd_Dir ) ){
+		printf("1->open %d close %d dir %d current %f \r\n", cnraw_open_sw, cnraw_close_sw, gnCmd_Dir, nfcurrent_value );
+		_mymotor_shttuer_cmd( 0, 0.0f );
+		_mymotor_break_stop();
+		geState = SD_IDLE;
+		return;
+	}
+	if ((cnraw_open_sw == 1) && ( 0 < gnCmd_Dir ) ){
+		printf("2->open %d close %d dir %d fire%d hold %d\r\n", cnraw_open_sw, cnraw_close_sw, gnCmd_Dir, gcnFireEvent_f, s_close_hold );
+		_mymotor_shttuer_cmd( 0, 0.0f );
+		_mymotor_break_stop();
+		geState = SD_IDLE;
+		s_close_hold = 0;
+		return;
+	}
+
+	// 2ms: 모터 상태머신 (dead-time/램프/상대편 OFF 보장)
+    if (gnAcc2ms >= 10) {
+        gnAcc2ms -= 10;
+
+        if( ( 38 < gnCorrectValue ) && ( 56 > gnCorrectValue ) ){
+        	nfCor = 0.9f;
+        }
+        else{
+        	nfCor = 1.0f;
+        }
+        _mymotor_shtter_state_update(nfCor);
+    }
+
+	if( gnAcc10ms >= 20 ){
+		gnAcc10ms -= 20;
+
+        // gcnCloseSw = cnraw_close_sw;
+        // gcnOpenSw  = cnraw_open_sw;
+        // printf("SW %d %d\r\n", gcnCloseSw, gcnOpenSw); 
+        if (prevFire != gcnFireEvent_f) {
+	        if (gcnFireEvent_f == 1) {
+	        	s_close_hold = 0;
+	            _mypid_reset(&gstPid);            // PID 시작 시 상태 리셋
+	        } 
+	        prevFire = gcnFireEvent_f;
+    	}
+
+		if( 0 == gcnFireEvent_f ){
+			if( s_close_hold ){
+				_mymotor_shttuer_cmd( 0, 0.0f );
+				_mymotor_coast_off();
+				geState = SD_IDLE;
+				return;
+			}
+
+
+			if (cnraw_close_sw == 1 || nfcurrent_value > 1.0f) {
+				_mymotor_shttuer_cmd( 0, 0.0f );
+				_mymotor_coast_off();
+				geState = SD_IDLE;
+				s_close_hold = 1;
+				return;
+			}
+			
+			// 닫기 진행
+			_mymotor_shttuer_cmd( -1, g_min_speed );
+			return;
+		}
+
+		// PID 모드(화재 감지)
+		cnedge_close_rise = ( cnraw_close_sw && !gcnPrevClose );
+		gcnPrevClose = cnraw_close_sw;
+		cnedge_open_rise = ( cnraw_open_sw && !gcnPrevOpen );
+		gcnPrevOpen = cnraw_open_sw;
+
+		if( cnedge_close_rise || cnedge_open_rise ){
+			gcnBlank_Active = 1;
+			gnBlank_t0_ms = HAL_GetTick();
+		}
+
+		if( gcnBlank_Active ){
+			if( ( HAL_GetTick() - gnBlank_t0_ms ) < BLANK_AFTER_LIMIT_MS ){
+				printf("bank\r\n");
+				_mymotor_shttuer_cmd( 0, 0.0f );
+				_mymotor_coast_off();
+				geState = SD_IDLE;
+				return;  			// 블랭킹 중 : PID 동작 일시 정지
+			}
+			else{
+				gcnBlank_Active = 0;
+			}
+		}
+
+		// 측정값 LPF(fc 5hz) + 슬루 제한(센서 100hz, 루프 20ms)
+		const float nfdt_sub = 0.020f;
+		const float nffc_sub = 4.0f;
+		const float nfa_sub = ( 2.0f * 3.1415926f * nffc_sub * nfdt_sub ) / (1.0f + 2.0f * 3.1415926f * nffc_sub * nfdt_sub );
+		float y_raw = (float)gnCorrectValue;
+		gnfY_Filt = gnfY_Filt + nfa_sub * ( y_raw - gnfY_Filt );
+
+		float nfdy_sub = gnfY_Filt - gnfY_Prev;
+		if( nfdy_sub > +Y_SLEW_PA_PER_20MS ){
+			nfdy_sub = +Y_SLEW_PA_PER_20MS;
+		}
+		if( nfdy_sub < -Y_SLEW_PA_PER_20MS ){
+			nfdy_sub = -Y_SLEW_PA_PER_20MS;
+		}
+		gnfY_Prev = gnfY_Prev + nfdy_sub;
+
+
+		float nfmeasured_pa = gnfY_Prev;
+		float nfsp = gnfTargetDpValue;
+		float nferr = nfsp - nfmeasured_pa;
+		printf("target %f(%f) err %f hold %d %f \r\n", nfsp, nfmeasured_pa,nferr, gcnDB_Hold, gnfCur_Pwm);
+		
+		// Deadband : HOLD(Shumit)
+		const float nfdb = g_deadband;
+		if( ( nferr < nfdb ) && ( nferr > -nfdb ) ){
+			printf("-->> DEAD 1 %d\r\n", gnMotorFixedSpeedTimer);
+			_mymotor_shttuer_cmd( 0, 0.0f );
+			_mymotor_coast_off();
+			geState = SD_IDLE;
+			gcnDB_Hold = 0;
+			gnfCur_Pwm = 0.0f;
+			if( 0 == gnMotorFixedSpeedTimer ){
+				// printf("-->> DEAD 1-1\r\n");
+				gnMotorFixedSpeedTimer = 500;
+			}
+			return;
+		}
+		else{
+			if( gcnDB_Hold ){
+				if( ( nferr <= g_deadband  ) && ( nferr >= -g_deadband ) ){
+					// _mymotor_shttuer_cmd( 0, 0.0f );
+					// _mymotor_coast_off();
+					// geState = SD_IDLE;
+					printf("-->> DEAD 2\r\n");
+					gcnDB_Hold = 0;
+				}
+				if( ( nferr >= DB_OUT_PA  ) || ( nferr <= -DB_OUT_PA ) ){
+					gnDB_Out_ms += 20;
+					if( gnDB_Out_ms >= DB_HOLD_MS ){
+						printf("-->> DEAD 3\r\n");
+						gcnDB_Hold = 0;
+						gnDB_Out_ms = 0;
+					}
+				}
+				else{
+					gcnDB_Hold = 0;
+					gnDB_Out_ms = 0;
+				}
+				if( 0 == gnMotorHoldTimer ){
+					printf("-->> DEAD 4\r\n");
+					gnMotorFixedSpeedTimer = 500;
+					gcnDB_Hold = 0;
+				}
+				if( 1 == gcnDB_Hold ){
+					_mymotor_shttuer_cmd( 0, 0.0f );
+					_mymotor_coast_off();
+					gnfCur_Pwm = 0.0f;
+					geState = SD_IDLE;
+					return;
+				}
+				// gnfCur_Pwm = MIN_DUTY;
+				// else
+				// if( 2 == gcnDB_Hold ){
+					// printf("hold 222\r\n");
+				// 	gnfCur_Pwm = MIN_DUTY;
+					
+				// }
+			}
+			else{
+				if( ( nferr <= DB_IN_PA  ) && ( nferr >= -DB_IN_PA ) ){
+					gcnDB_Hold = 1;
+					_mymotor_shttuer_cmd( 0, 0.0f );
+					_mymotor_coast_off();
+					geState = SD_IDLE;
+					gnMotorHoldTimer = 2000;
+					return;
+				}
+				else{
+					gcnMotorFixedSpeed_f = 1;
+				}
+				gnMotorFixedSpeedTimer = 0;
+				// else
+				// if( ( ( nferr > DB_IN_PA ) && ( nferr <= DB_OUT_PA ) ) ||
+				//     ( ( nferr < -DB_IN_PA ) && ( nferr >= -DB_OUT_PA ) ) ){
+				// 	gcnDB_Hold = 1;
+				// } 
+			}
+		}
+
+
+		// Deadband : Motor Stop
+		
+
+		// Caclulate PID
+		float nfu = _mypid_update( &gstPid, nfsp, nfmeasured_pa );
+		int ndir = ( 0.0f < nfu ) ? +1 : ( nfu < 0.0f ? -1 : 0 );
+		float nfmag = ( 0.0f <= nfu ) ? nfu : -nfu;
+
+		if( nfsp < nfmeasured_pa ){
+			ndir = -1;
+		}
+		// 아주 작은 출력 무시
+		// if( nfmag < DIR_THR ){
+			// printf("ignore %f\r\n", nfmag);
+		// 	ndir = 0;
+		// 	// return;
+		// }
+
+	    // 방향 전환 최소 유지시간
+	    // if( ndir != 0 && ndir != gnLast_Dir ){
+	    //     gnDir_Hold_ms += 20;
+	    //     if( gnDir_Hold_ms < DIR_HOLD_MS ){
+	    //         ndir = 0; nfmag = 0.0f;
+	    //     }
+	    //     else{
+	    //         gnLast_Dir = ndir;
+	    //         gnDir_Hold_ms = 0;
+	    //     }
+	    // }
+	    // else
+	    // if( ndir == gnLast_Dir ){
+	    //     gnDir_Hold_ms = 0;
+	    // }
+	    // else{
+
+	    // }
+
+		// 최소 듀티 보장
+		if( ( ndir != 0 ) && ( nfmag > 0.0f ) && ( nfmag < g_min_speed) ){ nfmag = g_min_speed; }
+
+		// 안전망(중복이지만 확실히)
+        if ((ndir > 0 && cnraw_open_sw) || (ndir < 0 && cnraw_close_sw) ){
+        	ndir = 0;
+        	nfmag = 0.0f;
+        }
+        // printf("nfmag %f\r\n", nfmag);
+        if( 1 == gcnMotorFixedSpeed_f){
+        	gcnMotorFixedSpeed_f = 0;
+        	gnMotorFixedSpeedTimer = 500;
+			_mymotor_shttuer_cmd(ndir, g_min_speed* 0.9);
+        }
+        else{
+        	_mymotor_shttuer_cmd(ndir, nfmag);
+        }
+	}
+}
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////
+// local function implement
+// OPEN PLUS : MINUS >> M0
+// ClOSE MINUS : PLUS >> M1
+// OFF : MINUS : MINUS
+void _mymotor_set_open_pwm( const float _nfduty )
+{
+	float nfduty = 0.0f;
+	// printf("0\r\n");
+	if( 0 == gnMotorFixedSpeedTimer ){
+		nfduty = _nfduty;
+	}
+	else{
+		if( 480 < gnMotorFixedSpeedTimer){
+			printf("[\r\n");
+			if( 0.0f != _nfduty ){
+				nfduty = MIN_DUTY ;
+			}
+		}
+		else{
+			printf("]\r\n");
+			nfduty = 0.0f;
+			// MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M1, 0.0f );	
+		}
+	}
+	
+	if( 1 == _mymotor_get_close_gnd_state() ){
+		_mymotor_gnd_close_control( PIN_STATE_OFF );
+	}
+	else{
+		MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M0, nfduty );
+	}
+}
+
+void _mymotor_set_close_pwm( const float _nfduty )
+{
+	float nfduty = 0.0f;
+	// printf("1\r\n");
+	if( 0 == gnMotorFixedSpeedTimer ){
+		nfduty = _nfduty;
+	}
+	else{
+		if( 480 < gnMotorFixedSpeedTimer){
+			printf(">\r\n");
+			if( 0.0f != _nfduty ){
+				nfduty = MIN_DUTY;
+			}
+		}
+		else{
+			printf("<\r\n");
+			// MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M0, 0.0f );	
+			nfduty = 0.0f;
+		}
+	}
+	if( 1 == _mymotor_get_open_gnd_state() ){
+		_mymotor_gnd_open_control( PIN_STATE_OFF );
+	}
+	else{
+		MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M1, nfduty );
+	}
+}
+
+void _mymotor_break_stop( void )
+{
+	// _mymotor_set_open_pwm( 0.0f );
+	// _mymotor_set_close_pwm( 0.0f );
+	MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M0, 0.0f );
+	MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M1, 0.0f );
+	_mymotor_gnd_open_control( PIN_STATE_ON );
+	_mymotor_gnd_close_control( PIN_STATE_ON );
+
+	gnCur_Dir = 0;
+	gnfCur_Pwm = 0.0f;
+	geState = SD_IDLE;
+}
+
+void _mymotor_coast_off( void )
+{
+	_mymotor_set_open_pwm( 0.0f );
+	_mymotor_set_close_pwm( 0.0f );
+	_mymotor_gnd_open_control( PIN_STATE_OFF );
+	_mymotor_gnd_close_control( PIN_STATE_OFF );
+}
+
+uint8_t _mymotor_get_open_gnd_state( void )
+{
+	return HAL_GPIO_ReadPin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S1_GPIO_NUM );
+}
+
+void _mymotor_gnd_open_control( uint8_t _cnCtrl )
+{
+	HAL_GPIO_WritePin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S1_GPIO_NUM, (GPIO_PinState)_cnCtrl );
+}
+
+uint8_t _mymotor_get_close_gnd_state( void )
+{
+	return HAL_GPIO_ReadPin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S0_GPIO_NUM );
+}
+
+void _mymotor_gnd_close_control( uint8_t _cnCtrl )
+{
+	HAL_GPIO_WritePin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S0_GPIO_NUM, (GPIO_PinState)_cnCtrl );
+}
+
+
+
+
+
+static float _mymotor_clamp01( float _nfv )
+{
+	float nfret = _nfv;
+	if( nfret < 0.0f ){
+		nfret = 0.0f;
+	}
+	if( nfret > 1.0f ){
+		nfret = 1.0f;
+	}
+	
+	return nfret;
+}
+
+static float _mymotor_fabsf_local(float x){
+	return ( x < 0 ) ? -x : x;
+}
+
+void _mymotor_shttuer_cmd( int _nDir, float _nfSpeed )
+{
+	// _nDir *= -1;
+	gnCmd_Dir = ( _nDir > 0 ) ? +1 : ( _nDir < 0 ? -1 : 0 );
+	gnfCmd_Speed = _mymotor_clamp01( _nfSpeed );
+}
+
+void _mymotor_shtter_state_update( float _nfCor )
+{
+	uint32_t nnow = HAL_GetTick();
+	float nftargetspd = gnfCmd_Speed;
+	// printf("st %d sp %f dir %d\r\n", geState, nftargetspd, gnCmd_Dir);
+	if( ( 0 != gnCmd_Dir ) && ( 0.0f < nftargetspd ) && ( MIN_DUTY > nftargetspd ) ){
+		nftargetspd = MIN_DUTY;
+	}
+    if( MAX_DUTY < nftargetspd ){
+    	nftargetspd = MAX_DUTY;
+    }
+
+    switch (geState)
+    {
+	    case SD_IDLE:
+	        if( ( 0 == gnCmd_Dir ) || ( 0.0f >= nftargetspd ) ){
+	            _mymotor_coast_off();
+	            gnCur_Dir = 0; gnfCur_Pwm = 0.0f;
+	        } 
+	        else{
+	            if( ( gnCmd_Dir != gnCur_Dir ) && ( 0 != gnCur_Dir ) ){
+	                _mymotor_coast_off();
+	                gnT_Switch = nnow;
+	                geState = SD_SWITCH_PAUSE;
+	            }
+	            else{
+	                gnCur_Dir = gnCmd_Dir;
+	                // 상대편 완전 OFF
+	                if( 0 < gnCur_Dir ){
+	                	_mymotor_gnd_close_control(0); 
+	                	_mymotor_set_close_pwm(0.0f); 
+	                }
+	                else{ 
+	                	_mymotor_gnd_open_control(0);
+	                	_mymotor_set_open_pwm(0.0f);
+	                }
+
+	                // 해당편 GND ON 후 램프업
+	                if( 0 < gnCur_Dir ){
+	                	_mymotor_gnd_open_control(1);
+	                }
+	                else{
+	                	_mymotor_gnd_close_control(1);
+	                }
+
+	                float next = gnfCur_Pwm + RAMP_UP_PER_STEP;
+	                if( next > nftargetspd ){
+	                	next = nftargetspd;
+	                }
+
+	                gnfCur_Pwm = next;
+	                gnfCur_Pwm *=_nfCor;
+
+	                if( 0 < gnCur_Dir ){
+	                	_mymotor_set_open_pwm(gnfCur_Pwm);
+	                }
+	                else{
+	                	_mymotor_set_close_pwm(gnfCur_Pwm);
+	                }
+
+	                geState = SD_RUN;
+	            }
+	        }
+	        break;
+
+	    case SD_RUN:
+	        if( ( ( 0 != gnCmd_Dir ) && ( gnCmd_Dir != gnCur_Dir ) ) 
+	        	|| ( ( 0 == gnCmd_Dir ) || ( 0.0f >= nftargetspd  ) ) ){
+	            // 램프다운
+	            float next = gnfCur_Pwm - RAMP_DOWN_PER_STEP;
+	            if( 0.0f > next ){
+	            	next = 0.0f;
+	            }
+	            gnfCur_Pwm = next;
+	            gnfCur_Pwm *=_nfCor;
+	            if( 0 < gnCur_Dir ){
+	            	_mymotor_set_open_pwm(gnfCur_Pwm);
+	            }
+	            else{
+	            	_mymotor_set_close_pwm(gnfCur_Pwm);
+	            }
+
+	            if( 0.0f >= gnfCur_Pwm ) {
+	                _mymotor_coast_off();
+	                gnT_Switch = nnow;
+	                geState = SD_SWITCH_PAUSE;
+	            }
+	        }
+	        else{
+	            // 같은 방향 유지: 목표로 램프
+	            float step = (nftargetspd >= gnfCur_Pwm) ? RAMP_UP_PER_STEP : RAMP_DOWN_PER_STEP;
+	            float delta = nftargetspd - gnfCur_Pwm;
+	            if( _mymotor_fabsf_local(delta) <= step ){
+	            	gnfCur_Pwm = nftargetspd;
+	            }
+	            else{
+	            	gnfCur_Pwm += (delta > 0 ? step : -step);
+	            }
+	            gnfCur_Pwm *=_nfCor;
+	            // 상대편은 항상 OFF 유지
+	            if( 0 < gnCur_Dir ){
+	                _mymotor_gnd_close_control(0);
+	                _mymotor_set_close_pwm(0.0f);
+	                _mymotor_gnd_open_control(1);
+	                _mymotor_set_open_pwm(gnfCur_Pwm);
+	            } 
+	            else{
+	                _mymotor_gnd_open_control(0);
+	                _mymotor_set_open_pwm(0.0f);
+	                _mymotor_gnd_close_control(1);
+	                _mymotor_set_close_pwm(gnfCur_Pwm);
+	            }
+	        }
+	        break;
+
+	    case SD_SWITCH_PAUSE:
+	        if( SWITCH_DELAY_MS <= ( nnow - gnT_Switch ) ){
+	            if( ( 0 == gnCmd_Dir ) || ( 0.0f >= nftargetspd ) ) {
+	                _mymotor_coast_off();
+	                gnCur_Dir = 0;
+	                gnfCur_Pwm = 0.0f;
+	                geState = SD_IDLE;
+	            }
+	            else{
+	                gnCur_Dir = gnCmd_Dir;
+	                // 상대편 OFF 보증
+	                if( 0 < gnCur_Dir ){
+	                	_mymotor_gnd_close_control(0);
+	                	_mymotor_set_close_pwm(0.0f);
+	                }
+	                else{
+	                	_mymotor_gnd_open_control(0);
+	                	_mymotor_set_open_pwm(0.0f);
+	                }
+
+	                // 해당편 ON + 램프업 시작
+	                if( 0 < gnCur_Dir ){
+	                	_mymotor_gnd_open_control(1);
+	                }
+	                else{
+	                	_mymotor_gnd_close_control(1);
+	                }
+
+	                float next = gnfCur_Pwm + RAMP_UP_PER_STEP;
+	                if( next > nftargetspd ){
+	                	next = nftargetspd;
+	                }
+	                gnfCur_Pwm = next;
+	                gnfCur_Pwm *=_nfCor;
+	                if( 0 < gnCur_Dir ){
+	                	_mymotor_set_open_pwm(gnfCur_Pwm);
+	                }
+	                else{
+	                	_mymotor_set_close_pwm(gnfCur_Pwm);
+	                }
+
+	                geState = SD_RUN;
+	            }
+	        } 
+	        else{
+	            _mymotor_coast_off();
+	        }
+	        break;
+    }
+}
+// Forward 1:+, 2:-, Reverse 1:-, 2:+
+
+////////////////////////////
+static float clampf(float v, float lo, float hi)
+{
+    return ( v < lo ) ? lo : ( ( v > hi ) ? hi : v );
+}
+
+void _mypid_init( MYPID_t *p, float kp, float ki, float kd, float dt )
+{
+    p->kp = kp;
+    p->ki = ki;
+    p->kd = kd;
+    p->dt = dt;
+    p->out_min =-1.0f;
+    p->out_max =+1.0f;
+    p->i_min =-0.5f;
+    p->i_max =+0.5f;
+    p->d_hz = 0.0f;
+    p->integrator = 0.0f;
+    p->prev_err = 0.0f;
+    p->d_state = 0.0f;
+    p->first_run = 1;
+
+    // 안정화 구간
+    p->settle_band = 12.0f;  			// g_deadband <= settle_band * 0.5
+    p->settle_scale = 0.0001f;
+    p->u_slew = 0.01f;
+    p->prev_u = 0.0f;
+}
+
+void _mypid_set_limits( MYPID_t *p, float out_min, float out_max, float i_min, float i_max )
+{
+    p->out_min = out_min;
+    p->out_max = out_max;
+    p->i_min = i_min;
+    p->i_max = i_max;
+}
+
+void _mypid_set_d_lpf(MYPID_t *p, float d_hz)
+{
+	p->d_hz = d_hz; 
+}
+
+void _mypid_reset(MYPID_t *p)
+{
+    p->integrator = 0.0f;
+    p->prev_err = 0.0f;
+    p->d_state = 0.0f;
+    p->first_run = 1;
+}
+
+float _mypid_update(MYPID_t *p, float sp, float y)
+{
+    float err = sp - y;
+    
+    // 안정화 구간 페이퍼 게인
+    float ae = (err >=0)? err: -err;
+    float s = clampf(ae / (p->settle_band > 1e-6f ? p->settle_band : 1e-6f ), 0.0f, 1.0f);
+	float scale = p->settle_scale + ( 1.0f - p->settle_scale) * (s*s);
+	float kp = p->kp * scale;
+	float ki = p->ki * scale;
+	float kd = p->kd * scale;
+    // P
+    float P = kp * err;
+
+    // I (clamp)
+    p->integrator += ( ki * err ) * p->dt;
+    p->integrator = clampf( p->integrator, p->i_min, p->i_max );
+
+    // D with 1st-order LPF on derr/dt
+    float D = 0.0f;
+    if( ( kd > 0.0f ) && ( p->d_hz > 0.0f ) ){
+        float derr = p->first_run ? 0.0f : (err - p->prev_err) / p->dt;
+        float a = ( 2.0f * 3.1415926f * p->d_hz * p->dt );
+        a = a / ( 1.0f + a );                    // alpha
+        p->d_state = p->d_state + a * ( derr - p->d_state );
+        D = kd * p->d_state;
+    }
+
+    float u = P + p->integrator + D;
+
+    // Saturation + simple back-calculation anti-windup
+    float u_clamped = clampf(u, p->out_min, p->out_max);
+    if( u != u_clamped ){
+        p->integrator += 0.1f * (u_clamped - u);
+        p->integrator = clampf( p->integrator, p->i_min, p->i_max );
+        u = u_clamped;
+    }
+
+    float du = u - p->prev_u;
+    float max_du = p->u_slew;
+
+    if( du > max_du ){
+    	u = p->prev_u + max_du;
+    }
+    if( du < -max_du ){
+    	u = p->prev_u - max_du;
+    }
+    p->prev_u = u;
+    p->prev_err = err;
+    p->first_run = 0;
+    return u; // [-1..+1] : +는 OPEN, -는 CLOSE
+}

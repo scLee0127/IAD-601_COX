@@ -25,7 +25,7 @@ set(CMAKE_PROJECT_NAME IAD601_COX)
 set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 
 # Core project settings
-project(${CMAKE_PROJECT_NAME})
+project(${CMAKE_PROJECT_NAME} LANGUAGES C ASM)
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
 # Enable CMake support for ASM and C languages
@@ -44,7 +44,23 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    Core/Src/enviroment.c
+    Core/Src/func_init.c
+    Core/Src/global.c
+    Core/Src/my7segment.c
+    Core/Src/myadc.c
+    Core/Src/mybutton.c
+    Core/Src/mydpsensor.c
+    Core/Src/myevent.c
+    Core/Src/myflash.c
+    Core/Src/mygpio.c
+    Core/Src/mygui.c
+    Core/Src/myi2c.c
+    Core/Src/mymodbus.c
+    Core/Src/mymotor.c
+    Core/Src/myringbuffer.c
+    Core/Src/mytimer.c
+    Core/Src/myuart.c
 )
 
 # Add include paths
@@ -65,4 +81,19 @@ target_link_libraries(${CMAKE_PROJECT_NAME}
     stm32cubemx
 
     # Add user defined libraries
+)
+
+# Application diagnostics print floating-point values with newlib-nano.
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -u _printf_float)
+
+add_custom_command(TARGET ${CMAKE_PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_OBJCOPY} -O ihex $<TARGET_FILE:${CMAKE_PROJECT_NAME}>
+        ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.hex
+    COMMAND ${CMAKE_OBJCOPY} -O binary $<TARGET_FILE:${CMAKE_PROJECT_NAME}>
+        ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin
+    COMMAND ${CMAKE_SIZE} $<TARGET_FILE:${CMAKE_PROJECT_NAME}>
+    BYPRODUCTS
+        ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.hex
+        ${CMAKE_CURRENT_BINARY_DIR}/${CMAKE_PROJECT_NAME}.bin
+    VERBATIM
 )
