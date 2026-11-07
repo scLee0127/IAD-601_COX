@@ -4,6 +4,8 @@
 #include "mytimer.h"
 #include "myadc.h"
 
+volatile MOTOR_OCP_DEBUG_T gMotorOcpDebug = {0};
+
 #if BOARD_MOTOR_ENABLE
 /////////////////////////////////////////////////////////////////////////////////////////////
 // import function prototype
@@ -236,12 +238,32 @@ void MYMOTOR_Proc( void )
 
 	// printf("0->open %d close %d dir %d current %f \r\n", cnraw_open_sw, cnraw_close_sw, gnCmd_Dir, nfcurrent_value );
 	// 과정류 방지
-	if( gnfMotorCurretValue < nfcurrent_value ){
+	if( ADC0_Is_Saturated() || (gnfMotorCurretValue < nfcurrent_value) ){
+        if (0U == gcnMotorOverCurrent_f) {
+            gMotorOcpDebug.tick_ms = nmotortick_now;
+            gMotorOcpDebug.reason = (ADC0_Is_Saturated() ? 1U : 0U) |
+                ((gnfMotorCurretValue < nfcurrent_value) ? 2U : 0U);
+            gMotorOcpDebug.current_a = nfcurrent_value;
+            gMotorOcpDebug.limit_a = gnfMotorCurretValue;
+            gMotorOcpDebug.pa6_v = ADC0_ReadVoltage();
+            gMotorOcpDebug.command_dir = gnCmd_Dir;
+            gMotorOcpDebug.applied_dir = gnCur_Dir;
+            gMotorOcpDebug.applied_duty = gnfCur_Pwm;
+            gMotorOcpDebug.gpio_b_idr = GPIOB->IDR;
+            gMotorOcpDebug.tim1_ccr1 = TIM1->CCR1;
+            gMotorOcpDebug.tim1_cnt = TIM1->CNT;
+            gMotorOcpDebug.tim1_cr1 = TIM1->CR1;
+            gMotorOcpDebug.tim1_ccer = TIM1->CCER;
+            gMotorOcpDebug.tim1_bdtr = TIM1->BDTR;
+            gMotorOcpDebug.count++;
+        }
 		gnTickPulseTimer_ms = 0; // 펄스 중단
 		_mymotor_break_stop();
 		geState = SD_IDLE;
 		gcnMotorOverCurrent_f = 1;
-		printf("Motor Over current [%.3f]\r\n", nfcurrent_value );
+		printf("Motor OCP: I=%.3f A limit=%.3f A PA6=%.3f V ADCsat=%u\r\n",
+			nfcurrent_value, gnfMotorCurretValue, ADC0_ReadVoltage(),
+			(unsigned)ADC0_Is_Saturated());
 		return;
 	}
 

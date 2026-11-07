@@ -37,9 +37,28 @@ void MYUART_Debug_Init( void )
 {
     if( UartHandler_Debug.gState == HAL_UART_STATE_RESET ){
         _myuart_uart2_debug_init( UART_BAUD_230400 );
+        /* Bypass stdio so a missing printf stream can be distinguished from
+         * USART2 pin/baud/wiring failures in Release builds. */
+        static const uint8_t probe[] = "\r\nUSART2 PA2 230400 8N1\r\n";
+        (void)HAL_UART_Transmit(&UartHandler_Debug, probe, sizeof(probe) - 1U, 20U);
         /* Send boot logs immediately, including messages without a newline. */
         setvbuf( stdout, NULL, _IONBF, 0 );
     }
+}
+
+/* Repeat a bounded number of raw probes so USB enumeration cannot hide
+ * the only boot message. No stdio, DMA, or UART interrupt is involved. */
+void MYUART_Debug_Probe_Proc(void)
+{
+    static uint32_t last_tick;
+    static uint8_t sent;
+    const uint32_t now = HAL_GetTick();
+    static const uint8_t probe[] = "USART2 alive 230400 8N1\r\n";
+
+    if ((sent >= 10U) || ((now - last_tick) < 1000U)) { return; }
+    last_tick = now;
+    sent++;
+    (void)HAL_UART_Transmit(&UartHandler_Debug, probe, sizeof(probe) - 1U, 5U);
 }
 
 void MYUART_Init( void )

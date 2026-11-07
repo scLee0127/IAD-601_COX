@@ -72,7 +72,7 @@ uint8_t MYBTN_Proc(void)
     if (0 != gnBtnTimer) {
         return MYBTN_STATE_IDLE;
     }
-    gnBtnTimer = MYBTN_PROC_REFRESH_TIME_MS;
+     gnBtnTimer = MYBTN_PROC_REFRESH_TIME_MS;
 
     button_event = _mybtn_update(
         (uint8_t)HAL_GPIO_ReadPin(MYGPIO_BTN_GPIO_PORT, MYGPIO_BTN_UP_GPIO_NUM),

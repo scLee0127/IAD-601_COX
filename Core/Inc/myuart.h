@@ -27,6 +27,7 @@ extern DMA_HandleTypeDef hdma_usart1_tx;
 
 // Funciton
 void MYUART_Debug_Init( void );
+void MYUART_Debug_Probe_Proc(void);
 void MYUART_Init( void );
 void MYUART_RS485_ReInit( void );
 uint8_t MYUART_Send_Data( UART_HandleTypeDef *_phuart, uint8_t* _pbData, uint16_t _nSize );

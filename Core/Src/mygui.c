@@ -777,7 +777,7 @@ void _mygui_main_page_check_limit_switch( uint8_t _cnSel_Btn )
 // public and export function implement
 void MYGUI_Proc( void )
 {
-	uint8_t cnbtn_st = MYBTN_Proc();
+  	uint8_t cnbtn_st = MYBTN_Proc();
 	int8_t cnupdown_btn = 0;
 	int8_t cnsel_btn = 0;
 

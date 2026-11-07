@@ -200,6 +200,7 @@ int main(void)
   while (1)
   {
     IWDG_Redfresh();
+    MYUART_Debug_Probe_Proc();
     if( 0 != gnBootTimer ) {
       MY7SEGMENT_Set_Value( FND_E, FND_n, FND_P_DOT, SEVEN_SEG_BLINK_OFF );
       // MYGPIO_Buzzer_Control( CONTROL_STATE_ON );
@@ -210,9 +211,9 @@ int main(void)
       MYGUI_Proc();
       MYGPIO_Proc();
       MYEVENT_Proc();
+      MYADC_Proc();  // Refresh the completed ADC sample before motor protection.
       MYMOTOR_Proc();
 //      MYMODBUS_Proc();
-      MYADC_Proc();
       MYUART_Check_Tx_Timeout();
       if( 0 == gnUartCheckTimer ){
         gnUartCheckTimer = 1000;
