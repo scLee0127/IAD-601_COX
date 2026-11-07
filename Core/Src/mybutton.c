@@ -3,141 +3,106 @@
 #include "mygpio.h"
 #include "mybutton.h"
 
-/////////////////////////////////////////////////////////////////////////////////////////////
-// import function prototype
+/* External-pull-up, active-low buttons. */
+#define MYBTN_PROC_REFRESH_TIME_MS       10U
+#define MYBTN_DEBOUNCE_TIME_MS           20U
+#define MYBTN_LONGKEY_TIME_MS          2200U
+#define MYBTN_PUSH_STATE                  0U
+#define MYBTN_PULL_STATE                  1U
 
-
-/////////////////////////////////////////////////////////////////////////////////////////////
-// local function prototype
-
-/////////////////////////////////////////////////////////////////////////////////////////////
-// global variable
-#define MYBTN_PROC_REFRESH_TIME_MS  				100
-#define MYBTN_PROC_LONGKEY_TIME  					20  		// 1.5seconds
-// #define MYBTN_STATE_IDLE  							0
-// #define MYBTN_STATE_CLICK_UP  						1
-// #define MYBTN_STATE_CLICK_SEL  						2
-// #define MYBTN_STATE_LONGKEY_UP  					3
-// #define MYBTN_STATE_LONGKEY_SEL  					4
-
-#define MYBTN_PUSH_STATE 							0
-#define MYBTN_PULL_STATE 							1
-static uint8_t gcnBtn_Up_St_prev = MYBTN_PULL_STATE;
-static uint8_t gcnBtn_Dwon_St_prev = MYBTN_PULL_STATE;
-static uint8_t gcnBtn_Sel_St_prev = MYBTN_PULL_STATE;
-static uint16_t gnBtn_Sel_Longkey_Count = 0;
-static uint8_t gcnBtn_Sel_Longkey_f = 0;
-static uint16_t gnBtn_Up_Longkey_Count = 0;
-static uint8_t gcnBtn_Up_Longkey_f = 0;
-static uint16_t gnBtn_Down_Longkey_Count = 0;
-static uint8_t gcnBtn_Down_Longkey_f = 0;
-/////////////////////////////////////////////////////////////////////////////////////////////
-// public and export function implement
-uint8_t MYBTN_Proc( void )
+typedef struct
 {
-	uint8_t cnbtn_up_st = 0;
-	uint8_t cnbtn_down_st = 0;
-	uint8_t cnbtn_sel_st = 0;
-	uint8_t cnret = MYBTN_STATE_IDLE;
-	if( 0 != gnBtnTimer ){ return MYBTN_STATE_IDLE; }
-	gnBtnTimer = MYBTN_PROC_REFRESH_TIME_MS;
+    uint8_t raw_state;
+    uint8_t stable_state;
+    uint8_t longkey_sent;
+    uint32_t raw_changed_tick;
+    uint32_t pressed_tick;
+} MYBTN_STATE_T;
 
-	cnbtn_up_st = HAL_GPIO_ReadPin( MYGPIO_BTN_GPIO_PORT, MYGPIO_BTN_UP_GPIO_NUM );
-	cnbtn_down_st = HAL_GPIO_ReadPin( MYGPIO_BTN_GPIO_PORT, MYGPIO_BTN_DOWN_GPIO_NUM );
-	cnbtn_sel_st = HAL_GPIO_ReadPin( MYGPIO_BTN_GPIO_PORT, MYGPIO_BTN_SEL_GPIO_NUM );
-	// MYUTIL_Printf("up %d, sel %d\r\n", cnbtn_up_st, cnbtn_sel_st);
+static MYBTN_STATE_T gstBtnUp = { MYBTN_PULL_STATE, MYBTN_PULL_STATE, 0U, 0U, 0U };
+static MYBTN_STATE_T gstBtnDown = { MYBTN_PULL_STATE, MYBTN_PULL_STATE, 0U, 0U, 0U };
+static MYBTN_STATE_T gstBtnSel = { MYBTN_PULL_STATE, MYBTN_PULL_STATE, 0U, 0U, 0U };
 
-	if( ( MYBTN_PULL_STATE == cnbtn_up_st) && ( MYBTN_PUSH_STATE == gcnBtn_Up_St_prev ) ){
-		if( 1 != gcnBtn_Up_Longkey_f ){
-			MYUTIL_Printf("Click UP\r\n");
-			cnret = MYBTN_STATE_CLICK_UP;
-		}
-		gcnBtn_Up_Longkey_f = 0;
-		gnBtn_Up_Longkey_Count = 0;
-	}
-	else
-	if( ( MYBTN_PUSH_STATE == cnbtn_up_st) && ( MYBTN_PUSH_STATE == gcnBtn_Up_St_prev ) ){
-		if( 0 == gcnBtn_Up_Longkey_f ){
-			if( MYBTN_PROC_LONGKEY_TIME < gnBtn_Up_Longkey_Count ){
-				gcnBtn_Up_Longkey_f = 1;
-				MYUTIL_Printf("Long key UP\r\n");
-				cnret = MYBTN_STATE_LONGKEY_UP;
-			}
-			else{
-				gnBtn_Up_Longkey_Count++;
-			}
-		}
-	}
-	else{
-		gnBtn_Up_Longkey_Count = 0;
-		gcnBtn_Up_Longkey_f = 0;
-	}
+static uint8_t _mybtn_update(const uint8_t sample,
+                             MYBTN_STATE_T *state,
+                             const uint32_t now,
+                             const uint8_t click_event,
+                             const uint8_t long_event)
+{
+    uint8_t event = MYBTN_STATE_IDLE;
 
-	if( ( MYBTN_PULL_STATE == cnbtn_down_st) && ( MYBTN_PUSH_STATE == gcnBtn_Dwon_St_prev ) ){
-		if( 1 != gcnBtn_Down_Longkey_f ){
-			MYUTIL_Printf("Click DOWN\r\n");
-			cnret = MYBTN_STATE_CLICK_DOWN;
-		}
-		gcnBtn_Down_Longkey_f = 0;
-		gnBtn_Down_Longkey_Count = 0;
-	}
-	else
-	if( ( MYBTN_PUSH_STATE == cnbtn_down_st) && ( MYBTN_PUSH_STATE == gcnBtn_Dwon_St_prev ) ){
-		if( 0 == gcnBtn_Down_Longkey_f ){
-			if( MYBTN_PROC_LONGKEY_TIME < gnBtn_Down_Longkey_Count ){
-				gcnBtn_Down_Longkey_f = 1;
-				MYUTIL_Printf("Long key DOWN\r\n");
-				cnret = MYBTN_STATE_LONGKEY_DOWN;
-			}
-			else{
-				gnBtn_Down_Longkey_Count++;
-			}
-		}
-	}
-	else{
-		gnBtn_Down_Longkey_Count = 0;
-		gcnBtn_Down_Longkey_f = 0;
-	}
+    if (sample != state->raw_state) {
+        state->raw_state = sample;
+        state->raw_changed_tick = now;
+    }
 
-	if( ( MYBTN_PULL_STATE == cnbtn_sel_st) && ( MYBTN_PUSH_STATE == gcnBtn_Sel_St_prev ) ){
-		if( 1 != gcnBtn_Sel_Longkey_f ){
-			MYUTIL_Printf("Click SEL\r\n");
-			cnret = MYBTN_STATE_CLICK_SEL;
-			if( 1 == gcnMotorOverCurrent_f ){
-				gcnMotorOverCurrent_f = 0;
-			}
-		}
-		gnBtn_Sel_Longkey_Count = 0;
-		gcnBtn_Sel_Longkey_f = 0;
-	}
-	else
-	if( ( MYBTN_PUSH_STATE == cnbtn_sel_st) && ( MYBTN_PUSH_STATE == gcnBtn_Sel_St_prev ) ){
-		if( 0 == gcnBtn_Sel_Longkey_f ) {
-			if( MYBTN_PROC_LONGKEY_TIME < gnBtn_Sel_Longkey_Count ){
-				gcnBtn_Sel_Longkey_f = 1;
-				MYUTIL_Printf("Long key SEL\r\n");
-				cnret = MYBTN_STATE_LONGKEY_SEL;
-			}
-			else{
-				gnBtn_Sel_Longkey_Count++;
+    if ((state->raw_state != state->stable_state) &&
+        ((now - state->raw_changed_tick) >= MYBTN_DEBOUNCE_TIME_MS)) {
+        state->stable_state = state->raw_state;
 
-			}
-		}
-	}
-	else{
-		gnBtn_Sel_Longkey_Count = 0;
-		gcnBtn_Sel_Longkey_f = 0;
-	}
-	gcnBtn_Up_St_prev = cnbtn_up_st;
-	gcnBtn_Dwon_St_prev = cnbtn_down_st;
-	gcnBtn_Sel_St_prev = cnbtn_sel_st;
+        if (MYBTN_PUSH_STATE == state->stable_state) {
+            state->pressed_tick = now;
+            state->longkey_sent = 0U;
+        }
+        else {
+            /* A long-press release must not become a second short click. */
+            if ((0U == state->longkey_sent) && (MYBTN_STATE_IDLE != click_event)) {
+                event = click_event;
+            }
+            state->longkey_sent = 0U;
+        }
+    }
 
-	if( cnret != MYBTN_STATE_IDLE ){
-		MYUTIL_Printf("--->> Not Idle %d\r\n", cnret);
-		MYGPIO_Run_Buzzer( BUZZER_PLAY_TYPE_BEEP );
-	}
-	return cnret;
+    if ((MYBTN_PUSH_STATE == state->stable_state) &&
+        (0U == state->longkey_sent) &&
+        ((now - state->pressed_tick) >= MYBTN_LONGKEY_TIME_MS)) {
+        state->longkey_sent = 1U;
+        event = long_event;
+    }
+
+    return event;
 }
 
-/////////////////////////////////////////////////////////////////////////////////////////////
-// local function implement
+uint8_t MYBTN_Proc(void)
+{
+    uint8_t event = MYBTN_STATE_IDLE;
+    uint8_t button_event;
+    const uint32_t now = HAL_GetTick();
+
+    if (0 != gnBtnTimer) {
+        return MYBTN_STATE_IDLE;
+    }
+    gnBtnTimer = MYBTN_PROC_REFRESH_TIME_MS;
+
+    button_event = _mybtn_update(
+        (uint8_t)HAL_GPIO_ReadPin(MYGPIO_BTN_GPIO_PORT, MYGPIO_BTN_UP_GPIO_NUM),
+        &gstBtnUp, now, MYBTN_STATE_CLICK_UP, MYBTN_STATE_LONGKEY_UP);
+    if (MYBTN_STATE_IDLE != button_event) {
+        event = button_event;
+    }
+
+    button_event = _mybtn_update(
+        (uint8_t)HAL_GPIO_ReadPin(MYGPIO_BTN_GPIO_PORT, MYGPIO_BTN_DOWN_GPIO_NUM),
+        &gstBtnDown, now, MYBTN_STATE_CLICK_DOWN, MYBTN_STATE_LONGKEY_DOWN);
+    if (MYBTN_STATE_IDLE != button_event) {
+        event = button_event;
+    }
+
+    button_event = _mybtn_update(
+        (uint8_t)HAL_GPIO_ReadPin(MYGPIO_BTN_GPIO_PORT, MYGPIO_BTN_SEL_GPIO_NUM),
+        &gstBtnSel, now, MYBTN_STATE_CLICK_SEL, MYBTN_STATE_LONGKEY_SEL);
+    if (MYBTN_STATE_IDLE != button_event) {
+        event = button_event;
+        if (MYBTN_STATE_CLICK_SEL == event) {
+            /* Preserve the existing manual over-current clear behavior. */
+            gcnMotorOverCurrent_f = 0U;
+        }
+    }
+
+    if (MYBTN_STATE_IDLE != event) {
+        MYUTIL_Printf("Button event %u\r\n", event);
+        MYGPIO_Run_Buzzer(BUZZER_PLAY_TYPE_BEEP);
+    }
+
+    return event;
+}

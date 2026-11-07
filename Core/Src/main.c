@@ -66,12 +66,9 @@ ADC_HandleTypeDef hadc;
 
 PUTCHAR_PROTOTYPE
 {
-    // #ifdef BOARD_DEBUG_MSG_ENABLE
-    // MYGPIO_Rs485_Eanble( MYGPIO_RS485_ENABLE );
-    HAL_UART_Transmit(&UartHandler_Debug, (uint8_t *)&ch, 1, 1000);
-    // MYGPIO_Rs485_Eanble( MYGPIO_RS485_DISABLE );
-    // #endif
-    return ch;
+    const HAL_StatusTypeDef status = HAL_UART_Transmit(&UartHandler_Debug,
+                                                       (uint8_t *)&ch, 1, 1000);
+    return (HAL_OK == status) ? ch : EOF;
 }
 // int _write( int file, char *p, int len )
 // {
@@ -178,14 +175,16 @@ int main(void)
   // MX_GPIO_Init();
   MX_IWDG_Init();     // watch dog
   MYGPIO_Init();
-  MYUART_Debug_Init();  // Environment loading already prints debug messages.
+  MYUART_Debug_Init();
+  /* The debug UART is ready here; emit exactly one boot banner before any
+   * environment-load log can obscure whether USART2 itself is alive. */
+  Print_Banner();
   ENV_Load_Enviroment_Info();
   MYUART_Init();
 
   ENV_Print_Load_Data();
   MYTIMER_Init();
   MYADC_Init();
-  Print_Banner();
   MYMOTOR_Init();
   // uart_sanity_check( &UartHandler_Debug );
   // uart_dump_regs( UartHandler_Debug.Instance );
@@ -222,8 +221,7 @@ int main(void)
 
       if( ( 1 == gcnSaveEnv_f ) && ( 0 == gnSaveEnvDelayTimer ) ){
           gcnSaveEnv_f = 0;
-          ENV_Save_Enviro
-          ment_Info();
+          ENV_Save_Enviroment_Info();
       }
     }
     

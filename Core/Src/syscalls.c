@@ -84,7 +84,10 @@ __attribute__((weak)) int _write(int file, char *ptr, int len)
 
   for (DataIdx = 0; DataIdx < len; DataIdx++)
   {
-    __io_putchar(*ptr++);
+    if (__io_putchar(*ptr++) < 0)
+    {
+      return (DataIdx == 0) ? -1 : DataIdx;
+    }
   }
   return len;
 }

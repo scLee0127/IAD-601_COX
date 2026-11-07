@@ -788,7 +788,6 @@ void MYGUI_Proc( void )
 	// Select Button
 	if( MYBTN_STATE_CLICK_SEL == cnbtn_st ){ cnsel_btn = 1; }
 	if( MYBTN_STATE_LONGKEY_SEL == cnbtn_st ){ cnsel_btn = 2; }
-	if( MYBTN_STATE_CLICK_SEL == cnbtn_st ){ cnsel_btn = 1; }
 	// UpDown Button
 	if( MYBTN_STATE_CLICK_UP == cnbtn_st ){ cnupdown_btn = +1; }
 	else

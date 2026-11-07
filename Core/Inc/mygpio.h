@@ -61,6 +61,14 @@
 #define MYGPIO_MOTOR_LIMIT_SW0_GPIO_NUM  	GPIO_PIN_6
 #define MYGPIO_MOTOR_LIMIT_SW1_GPIO_NUM  	GPIO_PIN_7
 
+// VNH7070BAS control interface
+#define MYGPIO_MOTOR_INA_GPIO_PORT        GPIOB
+#define MYGPIO_MOTOR_INA_GPIO_NUM        INA_Pin
+#define MYGPIO_MOTOR_INB_GPIO_PORT        GPIOB
+#define MYGPIO_MOTOR_INB_GPIO_NUM        INB_Pin
+#define MYGPIO_MOTOR_SEL0_GPIO_PORT       GPIOB
+#define MYGPIO_MOTOR_SEL0_GPIO_NUM       SEL0_Pin
+
 // Relay
 #define MYGPIO_OUT_RELAY_GIDONG_GPIO_NUM  	GPIO_PIN_12
 #define MYGPIO_OUT_RELAY_MANUAL_GPIO_NUM  	GPIO_PIN_11
@@ -113,5 +121,7 @@ void MYGPIO_Relay_Control( uint8_t _cnRelay, uint8_t _cnCtrl );
 uint8_t MYGPIO_Get_Gidong_State( void );
 uint8_t MYGPIO_Get_Manual_State( void );
 void MYGPIO_Motor_Control( uint8_t _cnDirection, uint8_t _cnSpeed );
+void MYGPIO_Motor_Apply( int _nDirection, float _nDuty );
+void MYGPIO_Motor_Stop( void );
 uint8_t MYGPIO_Get_LimitSwitch_State( uint8_t _cnIdx );
 #endif // __MYGPIO_H__

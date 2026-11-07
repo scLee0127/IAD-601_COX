@@ -93,6 +93,8 @@ void Error_Handler(void);
 #define INA_GPIO_Port GPIOB
 #define SEL0_Pin GPIO_PIN_15
 #define SEL0_GPIO_Port GPIOB
+#define MOTOR_PWM_Pin GPIO_PIN_13
+#define MOTOR_PWM_GPIO_Port GPIOB
 #define RS485_EN_Pin GPIO_PIN_8
 #define RS485_EN_GPIO_Port GPIOA
 #define RS485_TX_Pin GPIO_PIN_9
@@ -117,8 +119,8 @@ void Error_Handler(void);
 #define FND_F_GPIO_Port GPIOB
 #define FND_G_Pin GPIO_PIN_6
 #define FND_G_GPIO_Port GPIOB
-#define GND_DP_Pin GPIO_PIN_7
-#define GND_DP_GPIO_Port GPIOB
+#define FND_DP_Pin GPIO_PIN_7
+#define FND_DP_GPIO_Port GPIOB
 #define SENSOR_I2C_SCL_Pin GPIO_PIN_8
 #define SENSOR_I2C_SCL_GPIO_Port GPIOB
 #define SENSOR_I2C_SDA_Pin GPIO_PIN_9

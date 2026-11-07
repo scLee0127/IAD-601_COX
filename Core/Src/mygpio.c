@@ -106,6 +106,13 @@ void MYGPIO_Init( void )
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(MYGPIO_IN_M_GPIO_PORT, &GPIO_InitStruct);
 
+	/* Motor limit inputs.  The board uses external contacts/pull-ups. */
+	GPIO_InitStruct.Pin = MYGPIO_MOTOR_LIMIT_SW0_GPIO_NUM | MYGPIO_MOTOR_LIMIT_SW1_GPIO_NUM;
+	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(MYGPIO_MOTOR_GPIO_PORT, &GPIO_InitStruct);
+
 #if 0
 	/* Motor Ctrl */
 	HAL_GPIO_WritePin(MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S0_GPIO_NUM | MYGPIO_MOTOR_CTRL_S1_GPIO_NUM, GPIO_PIN_RESET);
@@ -134,15 +141,37 @@ void MYGPIO_Init( void )
 
 	HAL_GPIO_WritePin(MYGPIO_BUZZER_GPIO_PORT, MYGPIO_BUZZER_GPIO_NUM, GPIO_PIN_RESET);
 #endif
-	/* Relay */
-	HAL_GPIO_WritePin(MYGPIO_OUT_RELAY_GPIO_PORT, MYGPIO_OUT_RELAY_GIDONG_GPIO_NUM | MYGPIO_OUT_RELAY_MANUAL_GPIO_NUM, GPIO_PIN_RESET);
-	GPIO_InitStruct.Pin = MYGPIO_OUT_RELAY_GIDONG_GPIO_NUM | MYGPIO_OUT_RELAY_MANUAL_GPIO_NUM;
+	/* Relay outputs: PA12 is the PA1/gidong confirmation output and PA11 is
+	 * the existing manual/fault relay output.  PB11 remains the manual input. */
+	HAL_GPIO_WritePin(MYGPIO_OUT_RELAY_GPIO_PORT,
+		MYGPIO_OUT_RELAY_EXT_CHECK_GPIO_NUM | MYGPIO_OUT_RELAY_EXT_FAULT_GPIO_NUM,
+		GPIO_PIN_RESET);
+	GPIO_InitStruct.Pin = MYGPIO_OUT_RELAY_EXT_CHECK_GPIO_NUM | MYGPIO_OUT_RELAY_EXT_FAULT_GPIO_NUM;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
 	GPIO_InitStruct.Pull = GPIO_PULLUP;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(MYGPIO_OUT_RELAY_GPIO_PORT, &GPIO_InitStruct);
 
-	HAL_GPIO_WritePin(MYGPIO_OUT_RELAY_GPIO_PORT, MYGPIO_OUT_RELAY_GIDONG_GPIO_NUM | MYGPIO_OUT_RELAY_MANUAL_GPIO_NUM, GPIO_PIN_RESET);
+	HAL_GPIO_WritePin(MYGPIO_OUT_RELAY_GPIO_PORT,
+		MYGPIO_OUT_RELAY_EXT_CHECK_GPIO_NUM | MYGPIO_OUT_RELAY_EXT_FAULT_GPIO_NUM,
+		GPIO_PIN_RESET);
+
+#if BOARD_MOTOR_ENABLE
+	/* Keep the VNH7070 control inputs in the no-drive state until TIM1 is
+	 * configured.  PB13 is initialized as a GPIO low by MYTIMER_Init(). */
+	HAL_GPIO_WritePin(MYGPIO_MOTOR_INA_GPIO_PORT,
+		MYGPIO_MOTOR_INA_GPIO_NUM | MYGPIO_MOTOR_INB_GPIO_NUM | MYGPIO_MOTOR_SEL0_GPIO_NUM,
+		GPIO_PIN_RESET);
+	GPIO_InitStruct.Pin = MYGPIO_MOTOR_INA_GPIO_NUM | MYGPIO_MOTOR_INB_GPIO_NUM |
+		MYGPIO_MOTOR_SEL0_GPIO_NUM;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(MYGPIO_MOTOR_INA_GPIO_PORT, &GPIO_InitStruct);
+	HAL_GPIO_WritePin(MYGPIO_MOTOR_INA_GPIO_PORT,
+		MYGPIO_MOTOR_INA_GPIO_NUM | MYGPIO_MOTOR_INB_GPIO_NUM | MYGPIO_MOTOR_SEL0_GPIO_NUM,
+		GPIO_PIN_RESET);
+#endif
 
 }
 
@@ -266,6 +295,57 @@ void MYGPIO_Motor_Control( uint8_t _cnDirection, uint8_t _cnSpeed )
 	// 	MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M0, MOTOR_PWM_SPEED_STOP );
 	// 	MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M1, MOTOR_PWM_SPEED_STOP );
 	// }
+}
+
+void MYGPIO_Motor_Apply( int _nDirection, float _nDuty )
+{
+#if BOARD_MOTOR_ENABLE
+	static int last_hw_direction = 0;
+	int hw_direction = _nDirection;
+
+	if ((0 == _nDirection) || (_nDuty <= 0.0f)) {
+		/* PWM must be low before changing INA/INB. */
+		MYPWM_Set_Duty(MOTOR_PWM_CHANNEL_M0, 0.0f);
+		HAL_GPIO_WritePin(MYGPIO_MOTOR_INA_GPIO_PORT, MYGPIO_MOTOR_INA_GPIO_NUM, GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(MYGPIO_MOTOR_INB_GPIO_PORT, MYGPIO_MOTOR_INB_GPIO_NUM, GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(MYGPIO_MOTOR_SEL0_GPIO_PORT, MYGPIO_MOTOR_SEL0_GPIO_NUM, GPIO_PIN_RESET);
+		last_hw_direction = 0;
+		return;
+	}
+
+	/* Preserve the existing NO/NC electrical inversion exactly once. */
+	if (MOTOR_STATE_NORMAL_CLOSE != gnMotorNonc) {
+		hw_direction = -hw_direction;
+	}
+
+	if (hw_direction != last_hw_direction) {
+		MYPWM_Set_Duty(MOTOR_PWM_CHANNEL_M0, 0.0f);
+		HAL_GPIO_WritePin(MYGPIO_MOTOR_INA_GPIO_PORT, MYGPIO_MOTOR_INA_GPIO_NUM,
+			(hw_direction > 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+		HAL_GPIO_WritePin(MYGPIO_MOTOR_INB_GPIO_PORT, MYGPIO_MOTOR_INB_GPIO_NUM,
+			(hw_direction > 0) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+		/* VNH7070BAS input-to-PWM setup guard.  At 48 MHz this conservative
+		 * NOP loop is longer than the specified 20 us; it runs only on a
+		 * direction transition, never in the normal ramp update. */
+		for (volatile uint32_t delay = 0U; delay < 300U; ++delay) {
+			__NOP();
+		}
+		last_hw_direction = hw_direction;
+	}
+
+	HAL_GPIO_WritePin(MYGPIO_MOTOR_SEL0_GPIO_PORT, MYGPIO_MOTOR_SEL0_GPIO_NUM, GPIO_PIN_RESET);
+	MYPWM_Set_Duty(MOTOR_PWM_CHANNEL_M0, _nDuty);
+#else
+	(void)_nDirection;
+	(void)_nDuty;
+#endif
+}
+
+void MYGPIO_Motor_Stop( void )
+{
+#if BOARD_MOTOR_ENABLE
+	MYGPIO_Motor_Apply(0, 0.0f);
+#endif
 }
 
 void MYGPIO_Stop_Buzzer( void )

@@ -56,6 +56,7 @@ static uint32_t gnDirSwitch_ts = 0;  	// DIR 스위칭용 타임스
 static uint32_t gnMotorTick_prev = 0;
 static uint32_t gnAcc2ms = 0;
 static uint32_t gnAcc20ms = 0;
+static uint8_t gcnMotorHwReady = 0;
 
 // Blanking / Deadband
 static uint8_t gcnBlank_Active = 0;
@@ -107,16 +108,11 @@ static MYPID_t gstPid;
 /////////////////////////////////////////////////////////////////////////////////////////////
 // local function prototype
 // MOTOR
-void _mymotor_set_open_pwm( const float _nfduty );
-void _mymotor_set_close_pwm( const float _nfduty );
-void _mymotor_gnd_open_control( uint8_t _cnCtrl );
-void _mymotor_gnd_close_control( uint8_t _cnCtrl );
+void _mymotor_apply_output( int _nDir, float _nDuty );
 void _mymotor_coast_off( void );
 void _mymotor_break_stop( void );
 void _mymotor_shtter_state_update( void );
 void _mymotor_shttuer_cmd( int _nDir, float _nfSpeed, uint8_t _cnClearPwm );
-uint8_t _mymotor_get_open_gnd_state( void );
-uint8_t _mymotor_get_close_gnd_state( void );
 uint8_t _mymotor_get_open_limit_switch( void );
 uint8_t _mymotor_get_close_limit_switch( void );
 
@@ -159,7 +155,32 @@ void MYMOTOR_Init( void )
     gcnClose_Hold = 0;
     gnPid_D_Period = MOTOR_CONTROL_PERIOD_MS;
     gnfRamp_Scale = SPEED_SCALE_OUTER;
+	gnCmd_Dir = 0;
+	gnfCmd_Speed = 0.0f;
+	gnCur_Dir = 0;
+	gnfCur_Pwm = 0.0f;
+	geState = SD_IDLE;
+	gcnMotorHwReady = 1U;
+	MYGPIO_Motor_Stop();
 
+}
+
+void MYMOTOR_Apply_Settings( void )
+{
+	/* Runtime option application must not clear the over-current latch. */
+	if (0U != gcnMotorHwReady) {
+		_mymotor_break_stop();
+		gnCmd_Dir = 0;
+		gnfCmd_Speed = 0.0f;
+		gnCur_Dir = 0;
+		gnfCur_Pwm = 0.0f;
+		geState = SD_IDLE;
+	}
+	/* Use new PID gains from the next run without resetting protection state. */
+	gstPid.kp = gnfMotorPid_P;
+	gstPid.ki = gnfMotorPid_I;
+	gstPid.kd = gnfMotorPid_D;
+	gstPid.settle_band = gnfSettledBand_Pa;
 }
 static uint8_t gcnDeadbandTickAct_f = 0;
 void MYMOTOR_Proc( void )
@@ -216,12 +237,11 @@ void MYMOTOR_Proc( void )
 	// printf("0->open %d close %d dir %d current %f \r\n", cnraw_open_sw, cnraw_close_sw, gnCmd_Dir, nfcurrent_value );
 	// 과정류 방지
 	if( gnfMotorCurretValue < nfcurrent_value ){
-		printf("Motor Over current [%.3f]\r\n", nfcurrent_value );
-		_mymotor_shttuer_cmd( 0, 0.0f, MOTOR_PWM_VALUE_KEEP );
 		gnTickPulseTimer_ms = 0; // 펄스 중단
 		_mymotor_break_stop();
 		geState = SD_IDLE;
 		gcnMotorOverCurrent_f = 1;
+		printf("Motor Over current [%.3f]\r\n", nfcurrent_value );
 		return;
 	}
 
@@ -234,24 +254,26 @@ void MYMOTOR_Proc( void )
 		return;
 	}
 
-	if( ( cnraw_close_sw == 1 ) && ( 0 > gnCmd_Dir ) ){
+	/* Use the direction actually being driven first.  If stopped, check the
+	 * newly requested direction before allowing a new state-machine output. */
+	if( ( cnraw_close_sw == 1 ) &&
+		((0 > gnCur_Dir) || ((0 == gnCur_Dir) && (0 > gnCmd_Dir))) ){
 		// 닫힘 리미트 감지 & 닫는 방향 명령일 때만 정지
-		printf("Limit Close: open %d close %d dir %d current %f \r\n", cnraw_open_sw, cnraw_close_sw, gnCmd_Dir, nfcurrent_value );
 		gnTickPulseTimer_ms = 0;
-		_mymotor_shttuer_cmd( 0, 0.0f, MOTOR_PWM_VALUE_KEEP );
 		_mymotor_break_stop();
 		geState = SD_IDLE;
+		printf("Limit Close: open %d close %d dir %d current %f \r\n", cnraw_open_sw, cnraw_close_sw, gnCmd_Dir, nfcurrent_value );
 		return;
 	}
 
-	if ((cnraw_open_sw == 1) && ( 0 < gnCmd_Dir ) ){
+	if ((cnraw_open_sw == 1) &&
+		((0 < gnCur_Dir) || ((0 == gnCur_Dir) && (0 < gnCmd_Dir)))){
 		// 열림 리미트 감지 & 여는 방향 명령일 때만 정지
-		printf("Limit Open: open %d close %d dir %d fire%d hold %d\r\n", cnraw_open_sw, cnraw_close_sw, gnCmd_Dir, gcnFireEvent_f, gcnClose_Hold );
 		gnTickPulseTimer_ms = 0;
-		_mymotor_shttuer_cmd( 0, 0.0f, MOTOR_PWM_VALUE_KEEP );
 		_mymotor_break_stop();
 		geState = SD_IDLE;
 		gcnClose_Hold = 0;
+		printf("Limit Open: open %d close %d dir %d fire%d hold %d\r\n", cnraw_open_sw, cnraw_close_sw, gnCmd_Dir, gcnFireEvent_f, gcnClose_Hold );
 		return;
 	}
 
@@ -619,46 +641,17 @@ uint8_t MYMOTOR_Get_Close_LimitSwtich_St( void )
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 // local function implement
-// OPEN PLUS : MINUS >> M0
-// ClOSE MINUS : PLUS >> M1
-// OFF : MINUS : MINUS
-void _mymotor_set_open_pwm( const float _nfduty )
+/* Single low-level output boundary for the VNH7070 command triplet. */
+void _mymotor_apply_output(int _nDir, float _nDuty)
 {
-	if( 1 == _mymotor_get_close_gnd_state() ){
-		_mymotor_gnd_close_control( PIN_STATE_OFF );
-	}
-	else{
-		if( MOTOR_STATE_NORMAL_CLOSE == gnMotorNonc ){
-			MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M0, _nfduty );
-		}
-		else{
-			MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M1, _nfduty );
-		}
-	}
+	MYGPIO_Motor_Apply(_nDir, _nDuty);
 }
 
-void _mymotor_set_close_pwm( const float _nfduty )
+void _mymotor_break_stop(void)
 {
-	if( 1 == _mymotor_get_open_gnd_state() ){
-		_mymotor_gnd_open_control( PIN_STATE_OFF );
-	}
-	else{
-		if( MOTOR_STATE_NORMAL_CLOSE == gnMotorNonc ){
-			MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M1, _nfduty );
-		}
-		else{
-			MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M0, _nfduty );
-		}
-	}
-}
-
-void _mymotor_break_stop( void )
-{
-	MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M0, 0.0f );
-	MYPWM_Set_Duty( MOTOR_PWM_CHANNEL_M1, 0.0f );
-	_mymotor_gnd_open_control( PIN_STATE_ON );
-	_mymotor_gnd_close_control( PIN_STATE_ON );
-
+	_mymotor_apply_output(0, 0.0f);
+	gnCmd_Dir = 0;
+	gnfCmd_Speed = 0.0f;
 	gnCur_Dir = 0;
 	gnfCur_Pwm = 0.0f;
 	geState = SD_IDLE;
@@ -692,68 +685,14 @@ uint8_t _mymotor_get_close_limit_switch( void )
 	return cnret;
 }
 
-void _mymotor_coast_off( void )
+void _mymotor_coast_off(void)
 {
-	_mymotor_set_open_pwm( 0.0f );
-	_mymotor_set_close_pwm( 0.0f );
-	_mymotor_gnd_open_control( PIN_STATE_OFF );
-	_mymotor_gnd_close_control( PIN_STATE_OFF );
+	_mymotor_apply_output(0, 0.0f);
+	gnCur_Dir = 0;
+	gnfCur_Pwm = 0.0f;
+	geState = SD_IDLE;
 }
 
-uint8_t _mymotor_get_open_gnd_state( void )
-{
-#if 0
-	uint8_t cnret = 0;
-	if( MOTOR_STATE_NORMAL_CLOSE == gnMotorNonc ){
-		cnret = HAL_GPIO_ReadPin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S1_GPIO_NUM );
-	}
-	else{
-		cnret = HAL_GPIO_ReadPin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S0_GPIO_NUM );
-	}
-	return cnret;
-#endif
-	return 0;
-}
-
-void _mymotor_gnd_open_control( uint8_t _cnCtrl )
-{
-#if 0
-	if( MOTOR_STATE_NORMAL_CLOSE == gnMotorNonc ){
-		HAL_GPIO_WritePin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S1_GPIO_NUM, (GPIO_PinState)_cnCtrl );
-	}
-	else{
-		HAL_GPIO_WritePin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S0_GPIO_NUM, (GPIO_PinState)_cnCtrl );
-	}
-#endif
-}
-
-uint8_t _mymotor_get_close_gnd_state( void )
-{
-#if 0
-	uint8_t cnret = 0;
-
-	if( MOTOR_STATE_NORMAL_CLOSE == gnMotorNonc ){
-		cnret = HAL_GPIO_ReadPin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S0_GPIO_NUM );
-	}
-	else{
-		cnret = HAL_GPIO_ReadPin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S1_GPIO_NUM );
-	}
-	return cnret;
-#endif
-	return 0;
-}
-
-void _mymotor_gnd_close_control( uint8_t _cnCtrl )
-{
-#if 0
-	if( MOTOR_STATE_NORMAL_CLOSE == gnMotorNonc ){
-		HAL_GPIO_WritePin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S0_GPIO_NUM, (GPIO_PinState)_cnCtrl );
-	}
-	else{
-		HAL_GPIO_WritePin( MYGPIO_MOTOR_GPIO_PORT, MYGPIO_MOTOR_CTRL_S1_GPIO_NUM, (GPIO_PinState)_cnCtrl );
-	}
-#endif
-}	
 
 static float _mymotor_clamp01( float _nfv )
 {
@@ -805,198 +744,76 @@ void _mymotor_shttuer_cmd( int _nDir, float _nfSpeed, uint8_t _cnClearPwm )
 void _mymotor_shtter_state_update( void )
 {
 	uint32_t nnow = HAL_GetTick();
-	float nf_norm = gnfCmd_Speed;
-	float nftargetspd = 0.0f;
-	float nfstep_up = gcnInSettleBand_f ? gnfSettleBandUpperRamp : gnfNormalUpperRamp;
-	float nfstep_down = gcnInSettleBand_f ? gnfSettleBandDownRamp : gnfNormalDwonRamp;
+	float target = (gnCmd_Dir != 0) ? gnfCmd_Speed : 0.0f;
+	float step_up = (gcnInSettleBand_f ? gnfSettleBandUpperRamp : gnfNormalUpperRamp) * gnfRamp_Scale;
+	float step_down = (gcnInSettleBand_f ? gnfSettleBandDownRamp : gnfNormalDwonRamp) * gnfRamp_Scale;
+	float next;
 
-	nfstep_up *= gnfRamp_Scale;
-	nfstep_down *= gnfRamp_Scale;
+	switch (geState) {
+	case SD_IDLE:
+		if ((gnCmd_Dir == 0) || (target <= 0.0f)) {
+			_mymotor_coast_off();
+		}
+		else if ((gnCur_Dir != 0) && (gnCmd_Dir != gnCur_Dir)) {
+			_mymotor_coast_off();
+			gnDirSwitch_ts = nnow;
+			geState = SD_SWITCH_PAUSE;
+		}
+		else {
+			gnCur_Dir = gnCmd_Dir;
+			next = gnfCur_Pwm + step_up;
+			if (next > target) { next = target; }
+			gnfCur_Pwm = next;
+			_mymotor_apply_output(gnCur_Dir, gnfCur_Pwm);
+			geState = SD_RUN;
+		}
+		break;
 
-	if( ( 0 != gnCmd_Dir ) && ( 0.0f >= nf_norm ) ){
-		nftargetspd = 0.0f;
+	case SD_RUN:
+		if (((gnCmd_Dir != 0) && (gnCmd_Dir != gnCur_Dir)) ||
+		    (gnCmd_Dir == 0) || (target <= 0.0f)) {
+			next = gnfCur_Pwm - step_down;
+			if (next < 0.0f) { next = 0.0f; }
+			gnfCur_Pwm = next;
+			if (gnfCur_Pwm <= 0.0f) {
+				_mymotor_apply_output(0, 0.0f);
+				gnDirSwitch_ts = nnow;
+				geState = SD_SWITCH_PAUSE;
+			}
+			else {
+				_mymotor_apply_output(gnCur_Dir, gnfCur_Pwm);
+			}
+		}
+		else {
+			float delta = target - gnfCur_Pwm;
+			float step = (delta >= 0.0f) ? step_up : step_down;
+			if (_mymotor_fabsf_local(delta) <= step) {
+				gnfCur_Pwm = target;
+			}
+			else {
+				gnfCur_Pwm += (delta > 0.0f) ? step : -step;
+			}
+			_mymotor_apply_output(gnCur_Dir, gnfCur_Pwm);
+		}
+		break;
+
+	case SD_SWITCH_PAUSE:
+		if (SWITCH_DELAY_MS > (nnow - gnDirSwitch_ts)) {
+			_mymotor_apply_output(0, 0.0f);
+		}
+		else if ((gnCmd_Dir == 0) || (target <= 0.0f)) {
+			_mymotor_coast_off();
+		}
+		else {
+			gnCur_Dir = gnCmd_Dir;
+			next = step_up;
+			if (next > target) { next = target; }
+			gnfCur_Pwm = next;
+			_mymotor_apply_output(gnCur_Dir, gnfCur_Pwm);
+			geState = SD_RUN;
+		}
+		break;
 	}
-	else{
-		// if( SELECT_RAMP_PER_STEP_SETTLE_IN == gcnInSettleBand_f ){
-		// // 	nftargetspd = nf_norm;// _mymotor_speed_to_duty( nf_norm );
-		// 	if( 0 < gnCmd_Dir ){
-		// 		nftargetspd = _mymotor_speed_to_duty( nf_norm, gnfMotorMaxUpperSpeed );	
-		// 	}
-		// 	else{
-		// 		nftargetspd = _mymotor_speed_to_duty( nf_norm, gnfMotorMaxDownSpeed );
-		// 	}
-		// }
-		// else{
-		// // if( SELECT_RAMP_PER_STEP_SETTLE_TICK == gcnInSettleBand_f ){
-		// 	nftargetspd = nf_norm;
-		// }
-        // [수정] 상위 로직(MYMOTOR_Proc)에서 이미 Min/Max 속도 및 감속 비율을 
-        // 계산하여 nf_norm에 반영했으므로, 여기서는 그대로 목표 속도로 사용함.
-		nftargetspd = nf_norm;
-		
-	}
-	// if( 0.0f != nftargetspd ){
-    // [수정] 2ms 주기 함수 내 printf 제거 (시스템 지연 방지)
-	// MYUTIL_Printf("PA:%.1f\r\n", gnfLpfPaValue);
-	// [주의] 2ms 루프에서 printf 사용 시 UART 지연(약 7ms)으로 인해 Tick 타이머가 즉시 만료되는 문제 발생하므로 주석 처리
-	// printf("22 st[%d] up:%.4f st down:%.4f target:%.4f pwm:%.4f\r\n",geState, nfstep_up, nfstep_down, nftargetspd, gnfCur_Pwm);
-    // }
-	
-    switch (geState)
-    {
-	    case SD_IDLE:
-	        if( ( 0 == gnCmd_Dir ) || ( 0.0f >= nftargetspd ) ){
-	            _mymotor_coast_off();
-	            gnCur_Dir = 0;
-	            gnfCur_Pwm = 0.0f;
-	        } 
-	        else{
-	        	// 방향이 바뀌면 먼저 정지 후 SWITCH_PAUSE 함
-	            if( ( gnCmd_Dir != gnCur_Dir ) && ( 0 != gnCur_Dir ) ){
-	                _mymotor_coast_off();
-	                gnDirSwitch_ts = nnow;
-	                geState = SD_SWITCH_PAUSE;
-	            }
-	            else{
-	                gnCur_Dir = gnCmd_Dir;
-	                // 상대편 완전 OFF
-	                if( 0 < gnCur_Dir ){
-	                	_mymotor_gnd_close_control( PIN_STATE_OFF ); 
-	                	_mymotor_set_close_pwm( 0.0f ); 
-	                }
-	                else{ 
-	                	_mymotor_gnd_open_control( PIN_STATE_OFF );
-	                	_mymotor_set_open_pwm( 0.0f );
-	                }
-
-	                // 해당편 GND ON 후 램프업
-	                if( 0 < gnCur_Dir ){
-	                	_mymotor_gnd_open_control( PIN_STATE_ON );
-	                }
-	                else{
-	                	_mymotor_gnd_close_control( PIN_STATE_ON );
-	                }
-
-	                float next = gnfCur_Pwm + nfstep_up;
-	                if( next > nftargetspd ){
-	                	next = nftargetspd;
-	                }
-
-	                gnfCur_Pwm = next;
-
-	                if( 0 < gnCur_Dir ){
-	                	_mymotor_set_open_pwm(gnfCur_Pwm);
-	                }
-	                else{
-	                	_mymotor_set_close_pwm(gnfCur_Pwm);
-	                }
-
-	                geState = SD_RUN;
-	            }
-	        }
-	        break;
-
-	    case SD_RUN:
-	        if( ( ( 0 != gnCmd_Dir ) && ( gnCmd_Dir != gnCur_Dir ) ) 
-	         || ( ( 0 == gnCmd_Dir ) || ( 0.0f >= nftargetspd  ) ) ){
-	            // 램프다운
-	            float next = gnfCur_Pwm - nfstep_down;
-	            if( 0.0f > next ){
-	            	next = 0.0f;
-	            }
-	            gnfCur_Pwm = next;
-	            
-	            if( 0 < gnCur_Dir ){
-	            	_mymotor_set_open_pwm(gnfCur_Pwm);
-	            }
-	            else{
-	            	_mymotor_set_close_pwm(gnfCur_Pwm);
-	            }
-
-	            if( 0.0f >= gnfCur_Pwm ) {
-	                _mymotor_coast_off();
-	                gnDirSwitch_ts = nnow;
-	                geState = SD_SWITCH_PAUSE;
-	            }
-	        }
-	        else{
-	            // 같은 방향 유지: 목표로 램프
-	            float step = (nftargetspd >= gnfCur_Pwm) ? nfstep_up : nfstep_down;
-	            float delta = nftargetspd - gnfCur_Pwm;
-
-	            if( _mymotor_fabsf_local(delta) <= step ){
-	            	gnfCur_Pwm = nftargetspd;
-	            }
-	            else{
-	            	gnfCur_Pwm += (delta > 0 ? step : -step);
-	            }
-
-	            // 상대편은 항상 OFF 유지
-	            if( 0 < gnCur_Dir ){
-	                _mymotor_gnd_close_control( PIN_STATE_OFF );
-	                _mymotor_set_close_pwm( 0.0f );
-	                _mymotor_gnd_open_control( PIN_STATE_ON );
-	                _mymotor_set_open_pwm(gnfCur_Pwm);
-	            } 
-	            else{
-	                _mymotor_gnd_open_control( PIN_STATE_OFF );
-	                _mymotor_set_open_pwm( 0.0f );
-	                _mymotor_gnd_close_control( PIN_STATE_ON );
-	                _mymotor_set_close_pwm(gnfCur_Pwm);
-	            }
-	        }
-	        break;
-
-	    case SD_SWITCH_PAUSE:
-	        if( SWITCH_DELAY_MS <= ( nnow - gnDirSwitch_ts ) ){
-	            if( ( 0 == gnCmd_Dir ) || ( 0.0f >= nftargetspd ) ) {
-	                _mymotor_coast_off();
-	                gnCur_Dir = 0;
-	                gnfCur_Pwm = 0.0f;
-	                geState = SD_IDLE;
-	            }
-	            else{
-	                gnCur_Dir = gnCmd_Dir;
-
-	                // 상대편 OFF 보증
-	                if( 0 < gnCur_Dir ){
-	                	_mymotor_gnd_close_control( PIN_STATE_OFF );
-	                	_mymotor_set_close_pwm(0.0f);
-	                }
-	                else{
-	                	_mymotor_gnd_open_control( PIN_STATE_OFF );
-	                	_mymotor_set_open_pwm(0.0f);
-	                }
-
-	                // 해당편 ON + 램프업 시작
-	                if( 0 < gnCur_Dir ){
-	                	_mymotor_gnd_open_control( PIN_STATE_ON );
-	                }
-	                else{
-	                	_mymotor_gnd_close_control( PIN_STATE_ON );
-	                }
-
-	                float next = gnfCur_Pwm + nfstep_up;
-	                if( next > nftargetspd ){
-	                	next = nftargetspd;
-	                }
-	                gnfCur_Pwm = next;
-	                
-	                if( 0 < gnCur_Dir ){
-	                	_mymotor_set_open_pwm(gnfCur_Pwm);
-	                }
-	                else{
-	                	_mymotor_set_close_pwm(gnfCur_Pwm);
-	                }
-
-	                geState = SD_RUN;
-	            }
-	        } 
-	        else{
-	            _mymotor_coast_off();
-	        }
-	        break;
-    }
 }
 // Forward 1:+, 2:-, Reverse 1:-, 2:+
 
@@ -1108,6 +925,7 @@ float _mypid_update(MYPID_t *p, float sp, float y)
 #else
 /* Motor control is disabled; keep GUI and Modbus status queries available. */
 void MYMOTOR_Init( void ) {}
+void MYMOTOR_Apply_Settings( void ) {}
 void MYMOTOR_Proc( void ) {}
 float MYMOTOR_Get_Motor_Pwm( void ) { return 0.0f; }
 uint8_t MYMOTOR_Get_Open_LimitSwtich_St( void ) { return LIMIT_SWITCH_STATE_OFF; }

@@ -23,6 +23,22 @@
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Release"
             }
+        },
+        {
+            "name": "Debug-Motor",
+            "inherits": "Debug",
+            "binaryDir": "${sourceDir}/build/Debug-Motor",
+            "cacheVariables": {
+                "BOARD_MOTOR_ENABLE": "1"
+            }
+        },
+        {
+            "name": "Release-Motor",
+            "inherits": "Release",
+            "binaryDir": "${sourceDir}/build/Release-Motor",
+            "cacheVariables": {
+                "BOARD_MOTOR_ENABLE": "1"
+            }
         }
     ],
     "buildPresets": [
@@ -33,6 +49,14 @@
         {
             "name": "Release",
             "configurePreset": "Release"
+        },
+        {
+            "name": "Debug-Motor",
+            "configurePreset": "Debug-Motor"
+        },
+        {
+            "name": "Release-Motor",
+            "configurePreset": "Release-Motor"
         }
     ]
 }

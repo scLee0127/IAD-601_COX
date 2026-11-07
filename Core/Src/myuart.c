@@ -14,6 +14,7 @@ static int _myuart_convert_baudrate( int _nbaud );
 static void _myuart_uart2_debug_init( uint8_t _cnbaudrate );
 static void _myuart_uart1_rs485_init( const uint8_t _cnbaudrate );
 static void _myuart_tx_ring_buffer_init( void );
+static void _myuart_rs485_rx_reset( void );
 static float _myuart_1byte_send_time_ms( const int _nbaud );
 static void _myuart_set_tx_timeout( uint16_t _nSize );
 
@@ -55,6 +56,7 @@ void MYUART_RS485_ReInit( void )
 {
     const DEVICEENV* pstenv = Env_Get_Enviroment();
     gcnRS485_Baudrate = (uint8_t)pstenv->nBaudrate;
+    HAL_NVIC_DisableIRQ(USART1_IRQn);
     HAL_UART_DeInit( &UartHandler_Rs486 );
     _myuart_uart1_rs485_init( gcnRS485_Baudrate );
 }
@@ -182,15 +184,8 @@ void MYUART_IRQ_DMA_Recovery( UART_HandleTypeDef *huart )
     if( MYUART_INSTANCE_RS485 == huart->Instance ){
         gcnUartIt_RS485_Tx_Busy_f = 0;
         
-        // RX 수신 버퍼 및 오프셋 상태 초기화
-        gnRS485RxOffset = 0;
-        gnRS485RxBuffSize = 0;
-        gnRS485Rx_f = 0;
-        gabRS485RxBuff[0] = '\0';
-
-        // RX 인터럽트 (RXNE, IDLE) 강제 재활성화
-        __HAL_UART_ENABLE_IT(huart, UART_IT_RXNE);
-        __HAL_UART_ENABLE_IT(huart, UART_IT_IDLE);
+        /* Reset flags, software state and RXNE/IDLE/NVIC as one operation. */
+        _myuart_rs485_rx_reset();
     }
 }
 
@@ -283,6 +278,38 @@ static void _myuart_uart1_rs485_init( const uint8_t _cnbaudrate )
 	{
 		Error_Handler();
 	}
+
+	/* HAL init leaves application RX interrupts disabled.  Clear stale UART
+	 * state first, then enable RXNE, IDLE and the USART1 vector together. */
+	_myuart_rs485_rx_reset();
+	MYGPIO_Rs485_Eanble(MYGPIO_RS485_DISABLE);
+}
+
+static void _myuart_rs485_rx_reset( void )
+{
+	volatile uint32_t dummy;
+
+	HAL_NVIC_DisableIRQ(USART1_IRQn);
+	__HAL_UART_DISABLE_IT(&UartHandler_Rs486, UART_IT_RXNE);
+	__HAL_UART_DISABLE_IT(&UartHandler_Rs486, UART_IT_IDLE);
+
+	/* Drain RDR before enabling the new receive session. */
+	while ((UartHandler_Rs486.Instance->ISR & USART_ISR_RXNE) != 0U) {
+		dummy = UartHandler_Rs486.Instance->RDR;
+		(void)dummy;
+	}
+	UartHandler_Rs486.Instance->ICR = UART_CLEAR_PEF | UART_CLEAR_FEF |
+		UART_CLEAR_NEF | UART_CLEAR_OREF | UART_CLEAR_IDLEF | UART_CLEAR_TCF;
+
+	gnRS485RxOffset = 0U;
+	gnRS485RxBuffSize = 0U;
+	gnRS485Rx_f = 0U;
+	gabRS485RxBuff[0] = '\0';
+
+	__HAL_UART_ENABLE_IT(&UartHandler_Rs486, UART_IT_RXNE);
+	__HAL_UART_ENABLE_IT(&UartHandler_Rs486, UART_IT_IDLE);
+	HAL_NVIC_ClearPendingIRQ(USART1_IRQn);
+	HAL_NVIC_EnableIRQ(USART1_IRQn);
 }
 
 static void _myuart_tx_ring_buffer_init( void )

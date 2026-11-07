@@ -11,6 +11,10 @@ cmake --build --preset Debug
 
 cmake --preset Release
 cmake --build --preset Release
+
+# VNH7070 검증용 활성 빌드
+cmake --preset Release-Motor
+cmake --build --preset Release-Motor
 ```
 
 결과는 `build/Debug/` 또는 `build/Release/`의
@@ -34,3 +38,5 @@ Debug/Release 빌드는 STM32 GNU 14.3.1로 검증했다.
 모터 제어/PID 및 TIM3/TIM14 PWM 코드는 컴파일에서 제외하며, GUI/Modbus의
 모터 PWM 상태는 0, 리미트 스위치 상태는 OFF로 반환한다. 모터 설정값 저장 형식은 유지한다.
 기능을 복원하려면 `BOARD_MOTOR_ENABLE`을 1로 변경하고 다시 빌드한다.
+동일 목적의 `Debug-Motor` 프리셋도 제공되지만, `-O0` Flash 예산을
+초과할 수 있으므로 링크 결과를 확인한다.

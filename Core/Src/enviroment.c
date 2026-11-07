@@ -200,7 +200,10 @@ void _env_apply_load_data( void )
 	gnfDeadBand_Tick_Min_Pa = (float)gstDeviceEnv.nDeadBandTickMinPa;
 	gnfMotorCurretValue = (float)gstDeviceEnv.nOverCurrent / 10.0f;
 	gnMotorNonc = gstDeviceEnv.nMotorNoNc;
-	MYMOTOR_Init();
+	/* Configuration loading can occur before TIM1 exists at boot.  Hardware
+	 * initialization is performed by main after MYTIMER_Init; runtime updates
+	 * stop the output without clearing the protection latch. */
+	MYMOTOR_Apply_Settings();
 	MYMODBUS_Update_Cfg( &gstDeviceEnv );
 }
 

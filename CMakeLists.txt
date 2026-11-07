@@ -28,6 +28,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS TRUE)
 project(${CMAKE_PROJECT_NAME} LANGUAGES C ASM)
 message("Build type: " ${CMAKE_BUILD_TYPE})
 
+set(BOARD_MOTOR_ENABLE 0 CACHE STRING "Enable VNH7070 motor control build")
+
 # Enable CMake support for ASM and C languages
 enable_language(C ASM)
 
@@ -70,7 +72,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add project symbols (macros)
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user defined symbols
+    BOARD_MOTOR_ENABLE=${BOARD_MOTOR_ENABLE}
 )
 
 # Remove wrong libob.a library dependency when using cpp files

@@ -187,6 +187,9 @@ SECTIONS
   PROVIDE( __data_source = LOADADDR(.data) );
   PROVIDE( __data_source_end = __tdata_source_end );
   PROVIDE( __data_source_size = __data_source_end - __data_source );
+  /* The final 1 KiB page is reserved for the environment/settings record. */
+  ASSERT(LOADADDR(.tdata) + SIZEOF(.tdata) <= 0x0800FC00,
+         "Application image overlaps settings page at 0x0800FC00")
   /* Uninitialized data section */
   .tbss (NOLOAD) : ALIGN(4)
   {
