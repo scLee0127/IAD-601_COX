@@ -324,6 +324,10 @@ void MYGPIO_Motor_Apply( int _nDirection, float _nDuty )
 			(hw_direction > 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 		HAL_GPIO_WritePin(MYGPIO_MOTOR_INB_GPIO_PORT, MYGPIO_MOTOR_INB_GPIO_NUM,
 			(hw_direction > 0) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+		/* Select CS feedback for the high-side switch actually driving. */
+		HAL_GPIO_WritePin(MYGPIO_MOTOR_SEL0_GPIO_PORT,
+			MYGPIO_MOTOR_SEL0_GPIO_NUM,
+			(hw_direction > 0) ? GPIO_PIN_SET : GPIO_PIN_RESET);
 		/* VNH7070BAS input-to-PWM setup guard.  At 48 MHz this conservative
 		 * NOP loop is longer than the specified 20 us; it runs only on a
 		 * direction transition, never in the normal ramp update. */
@@ -333,7 +337,6 @@ void MYGPIO_Motor_Apply( int _nDirection, float _nDuty )
 		last_hw_direction = hw_direction;
 	}
 
-	HAL_GPIO_WritePin(MYGPIO_MOTOR_SEL0_GPIO_PORT, MYGPIO_MOTOR_SEL0_GPIO_NUM, GPIO_PIN_RESET);
 	MYPWM_Set_Duty(MOTOR_PWM_CHANNEL_M0, _nDuty);
 #else
 	(void)_nDirection;

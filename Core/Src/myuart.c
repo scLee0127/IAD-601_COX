@@ -18,6 +18,10 @@ static void _myuart_rs485_rx_reset( void );
 static float _myuart_1byte_send_time_ms( const int _nbaud );
 static void _myuart_set_tx_timeout( uint16_t _nSize );
 
+#ifndef MYUART_DEBUG_DIRECT_PROBE
+#define MYUART_DEBUG_DIRECT_PROBE 0
+#endif
+
 /////////////////////////////////////////////////////////////////////////////////////////////
 // global variable
 UART_HandleTypeDef UartHandler_Debug;      // debug UART2
@@ -36,9 +40,15 @@ uint8_t gcnRS485_Baudrate = 0;
 void MYUART_Debug_Init( void )
 {
     if( UartHandler_Debug.gState == HAL_UART_STATE_RESET ){
-        _myuart_uart2_debug_init( UART_BAUD_230400 );
+        _myuart_uart2_debug_init( UART_BAUD_115200 );
         /* Send boot logs immediately, including messages without a newline. */
         setvbuf( stdout, NULL, _IONBF, 0 );
+#if MYUART_DEBUG_DIRECT_PROBE
+        static const uint8_t probe[] = "UART2 DIRECT OK\r\n";
+        volatile HAL_StatusTypeDef direct_probe_status = HAL_UART_Transmit(
+            &UartHandler_Debug, (uint8_t *)probe, sizeof(probe) - 1U, 100U);
+        (void)direct_probe_status;
+#endif
     }
 }
 
