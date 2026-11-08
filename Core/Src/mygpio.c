@@ -84,10 +84,10 @@ void MYGPIO_Init( void )
     HAL_GPIO_WritePin(MYGPIO_DP_SENSOR_GPIO_PORT, MYGPIO_DP_SENSOR_SCL_GPIO_NUM, GPIO_PIN_SET);
     HAL_GPIO_WritePin(MYGPIO_DP_SENSOR_GPIO_PORT, MYGPIO_DP_SENSOR_SDA_GPIO_NUM, GPIO_PIN_SET);
 
-    /* Button */
+    /* Active-low buttons use internal pull-ups. */
     GPIO_InitStruct.Pin = MYGPIO_BTN_UP_GPIO_NUM | MYGPIO_BTN_DOWN_GPIO_NUM | MYGPIO_BTN_SEL_GPIO_NUM;
 	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Pull = GPIO_PULLUP;
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(MYGPIO_BTN_GPIO_PORT, &GPIO_InitStruct);
 
@@ -106,7 +106,7 @@ void MYGPIO_Init( void )
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(MYGPIO_IN_M_GPIO_PORT, &GPIO_InitStruct);
 
-	/* Motor limit inputs.  The board uses external contacts/pull-ups. */
+	/* Active-high motor limit inputs: HIGH means the limit is active. */
 	GPIO_InitStruct.Pin = MYGPIO_MOTOR_LIMIT_SW0_GPIO_NUM | MYGPIO_MOTOR_LIMIT_SW1_GPIO_NUM;
 	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
 	GPIO_InitStruct.Pull = GPIO_NOPULL;
@@ -252,7 +252,7 @@ uint8_t MYGPIO_Get_LimitSwitch_State( uint8_t _cnIdx )
 		cnpinnum = MYGPIO_MOTOR_LIMIT_SW1_GPIO_NUM;
 	}
 
-	if( 0 == HAL_GPIO_ReadPin( MYGPIO_MOTOR_GPIO_PORT, cnpinnum ) ){
+	if( GPIO_PIN_SET == HAL_GPIO_ReadPin( MYGPIO_MOTOR_GPIO_PORT, cnpinnum ) ){
 		cnret = 1;
 	}
 	return cnret; // 	HAL_GPIO_ReadPin( MYGPIO_MOTOR_GPIO_PORT, cnpinnum );
@@ -337,6 +337,7 @@ void MYGPIO_Motor_Apply( int _nDirection, float _nDuty )
 		last_hw_direction = hw_direction;
 	}
 
+	HAL_GPIO_WritePin(MYGPIO_MOTOR_SEL0_GPIO_PORT, MYGPIO_MOTOR_SEL0_GPIO_NUM, GPIO_PIN_RESET);
 	MYPWM_Set_Duty(MOTOR_PWM_CHANNEL_M0, _nDuty);
 #else
 	(void)_nDirection;

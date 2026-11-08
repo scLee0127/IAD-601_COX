@@ -40,7 +40,7 @@ uint8_t gcnRS485_Baudrate = 0;
 void MYUART_Debug_Init( void )
 {
     if( UartHandler_Debug.gState == HAL_UART_STATE_RESET ){
-        _myuart_uart2_debug_init( UART_BAUD_115200 );
+        _myuart_uart2_debug_init( UART_BAUD_230400 );
         /* Send boot logs immediately, including messages without a newline. */
         setvbuf( stdout, NULL, _IONBF, 0 );
 #if MYUART_DEBUG_DIRECT_PROBE
@@ -50,6 +50,21 @@ void MYUART_Debug_Init( void )
         (void)direct_probe_status;
 #endif
     }
+}
+
+/* Repeat a bounded number of raw probes so USB enumeration cannot hide
+ * the only boot message. No stdio, DMA, or UART interrupt is involved. */
+void MYUART_Debug_Probe_Proc(void)
+{
+    static uint32_t last_tick;
+    static uint8_t sent;
+    const uint32_t now = HAL_GetTick();
+    static const uint8_t probe[] = "USART2 alive 230400 8N1\r\n";
+
+    if ((sent >= 10U) || ((now - last_tick) < 1000U)) { return; }
+    last_tick = now;
+    sent++;
+    (void)HAL_UART_Transmit(&UartHandler_Debug, probe, sizeof(probe) - 1U, 5U);
 }
 
 void MYUART_Init( void )

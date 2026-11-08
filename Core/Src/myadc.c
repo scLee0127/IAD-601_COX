@@ -1,7 +1,26 @@
 #include "global.h"
 #include "myadc.h"
 
+/* VNH7070BAS table 10: nominal K2/K3 = Iout/Isense.
+ * Confirmed board connection:
+ * PA6 -- L3 --+-- R9 10k --+-- CS
+ *           C4 33nF      R10 1.5k
+ *            |           |
+ *           GND         GND
+ * R10 converts CS current to voltage. R9/C4 filter the ADC input;
+ * they are NOT a DC voltage divider (ADC input is high impedance).
+ * Iout = Vadc * K / R10; no 1.65 V offset or divider multiplier.
+ * R9*C4 = 330 us (CS source impedance adds to settling time).
+ * At 3.3 V ADC reference, full scale represents about 3.39 A nominal.
+ * CS fault voltage may exceed ADC full scale; rail readings trip protection
+ * but cannot distinguish excess current from driver diagnostics.
+ * K varies with current and temperature. Validate current calibration and
+ * filtered PWM response on the board before relying on the OCP threshold.
+ */
+#define MOTOR_CS_RSENSE_OHM  1500.0f
+#define MOTOR_CS_RATIO      1540.0f
 static float vref = 3.3f;
+static uint8_t gcnAdcSaturated = 0U;
 
 extern ADC_HandleTypeDef hadc;
 
@@ -68,7 +87,9 @@ void MYADC_Proc( void )
 	if( 1 == ADC0_TryGetRaw(&nadc_val ) ){
 		// gnAdcVoltage = nadc_val;
 		gnfAdcVoltage = ( (float)nadc_val * vref) / (float)4095.0f;
-		gnfCurrent_Val = ( gnfAdcVoltage - 1.65f )/ 0.4f;
+		gnfCurrent_Val = gnfAdcVoltage * MOTOR_CS_RATIO / MOTOR_CS_RSENSE_OHM;
+		/* A clipped ADC value cannot establish a safe current. */
+		gcnAdcSaturated = (nadc_val >= 4095U) ? 1U : 0U;
 	}
 
 }
@@ -94,4 +115,9 @@ float ADC0_Get_Current( void )
 {
 	// float nfVoltage = ADC0_ReadVoltage();
 	return gnfCurrent_Val;//( nfVoltage - 1.65f )/ 0.4f;
+}
+
+uint8_t ADC0_Is_Saturated(void)
+{
+    return gcnAdcSaturated;
 }
